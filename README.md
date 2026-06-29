@@ -4,6 +4,8 @@
 
 Shadow Language Lab is a local-first shadowing practice tool for turning SRT subtitles and media files into focused speaking drills.
 
+![Shadow Language Lab screenshot](./assets/shadow-language-lab.png)
+
 ## What It Is
 
 Shadow Language Lab is a static, local-first web app for shadowing practice. Import an SRT subtitle file and optional media, then practice complete multi-sentence passages instead of isolated subtitle fragments.
