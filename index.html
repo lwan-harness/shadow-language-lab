@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shadow Lab</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;600;700;800&family=IBM+Plex+Mono:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <svg class="icon-sprite" aria-hidden="true">
+      <symbol id="icon-upload" viewBox="0 0 24 24">
+        <path d="M12 3v12m0-12 4.5 4.5M12 3 7.5 7.5M4 15v3a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-3" />
+      </symbol>
+      <symbol id="icon-play" viewBox="0 0 24 24">
+        <path d="M8 5v14l11-7Z" />
+      </symbol>
+      <symbol id="icon-pause" viewBox="0 0 24 24">
+        <path d="M8 5v14M16 5v14" />
+      </symbol>
+      <symbol id="icon-prev" viewBox="0 0 24 24">
+        <path d="M11 6 5 12l6 6V6Zm8 0-6 6 6 6V6Z" />
+      </symbol>
+      <symbol id="icon-next" viewBox="0 0 24 24">
+        <path d="m13 6 6 6-6 6V6ZM5 6l6 6-6 6V6Z" />
+      </symbol>
+      <symbol id="icon-repeat" viewBox="0 0 24 24">
+        <path d="M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3" />
+      </symbol>
+      <symbol id="icon-mic" viewBox="0 0 24 24">
+        <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Zm7 9a7 7 0 0 1-14 0m7 7v3m-4 0h8" />
+      </symbol>
+      <symbol id="icon-stop" viewBox="0 0 24 24">
+        <path d="M7 7h10v10H7Z" />
+      </symbol>
+      <symbol id="icon-save" viewBox="0 0 24 24">
+        <path d="M5 3h12l2 2v16H5V3Zm4 0v6h6V3M8 17h8" />
+      </symbol>
+      <symbol id="icon-reset" viewBox="0 0 24 24">
+        <path d="M4 4v6h6M5 13a7 7 0 1 0 2-7L4 10" />
+      </symbol>
+      <symbol id="icon-settings" viewBox="0 0 24 24">
+        <path d="M4 7h10m4 0h2M4 17h2m4 0h10" />
+        <path d="M14 5v4M10 15v4" />
+      </symbol>
+    </svg>
+
+    <main class="shell">
+      <header class="topbar">
+        <section class="brand" aria-label="Shadow Lab">
+          <div class="brand-mark">SL</div>
+          <div>
+            <h1>Shadow Lab</h1>
+            <p id="fileStatus">未加载字幕</p>
+          </div>
+        </section>
+
+        <section class="top-actions" aria-label="导入">
+          <label class="import-button primary-import" title="导入字幕和音视频">
+            <svg><use href="#icon-upload"></use></svg>
+            <span>导入素材</span>
+            <input id="assetInput" type="file" accept=".srt,.vtt,text/plain,audio/*,video/*" multiple />
+          </label>
+          <button id="exportButton" class="icon-button" type="button" title="导出进度">
+            <svg><use href="#icon-save"></use></svg>
+          </button>
+          <button id="resetButton" class="icon-button danger" type="button" title="重置进度">
+            <svg><use href="#icon-reset"></use></svg>
+          </button>
+        </section>
+      </header>
+
+      <section class="metrics" aria-label="练习指标">
+        <article>
+          <span id="metricCompleted">0%</span>
+          <p>完成率</p>
+        </article>
+        <article>
+          <span id="metricAverage">--</span>
+          <p>平均分</p>
+        </article>
+        <article>
+          <span id="metricPracticed">0</span>
+          <p>练习次数</p>
+        </article>
+        <article>
+          <span id="metricDue">0</span>
+          <p>待练</p>
+        </article>
+      </section>
+
+      <section class="workspace">
+        <aside class="segment-panel" aria-label="练习段">
+          <div class="panel-head">
+            <h2>练习段</h2>
+            <input id="searchInput" type="search" placeholder="搜索" />
+          </div>
+          <div class="tabs" role="tablist" aria-label="练习段筛选">
+            <button class="tab active" type="button" data-filter="all">全部</button>
+            <button class="tab" type="button" data-filter="due">待练</button>
+            <button class="tab" type="button" data-filter="done">已过</button>
+          </div>
+          <ol id="segmentList" class="segment-list"></ol>
+        </aside>
+
+        <section class="practice-panel" aria-label="练习">
+          <div class="media-frame">
+            <video id="mediaPlayer" class="media-player" controls playsinline></video>
+            <div id="ttsSurface" class="tts-surface">
+              <div class="pulse-ring"></div>
+              <p>朗读模式</p>
+            </div>
+          </div>
+
+          <article class="cue">
+            <div class="cue-meta">
+              <span id="cueIndex">--</span>
+              <span id="cueTime">00:00.000 - 00:00.000</span>
+              <span id="cueState">待机</span>
+            </div>
+            <p id="cueText">导入字幕开始练习。</p>
+          </article>
+
+          <section class="transport" aria-label="播放控制">
+            <button id="prevButton" class="round-button" type="button" title="上一段">
+              <svg><use href="#icon-prev"></use></svg>
+            </button>
+            <button id="playButton" class="main-button" type="button" title="循环播放">
+              <svg><use href="#icon-play"></use></svg>
+            </button>
+            <button id="nextButton" class="round-button" type="button" title="下一段">
+              <svg><use href="#icon-next"></use></svg>
+            </button>
+            <button id="loopButton" class="round-button active" type="button" title="循环">
+              <svg><use href="#icon-repeat"></use></svg>
+            </button>
+            <button id="settingsButton" class="round-button settings-button" type="button" title="练习设置" aria-expanded="false" aria-controls="settingsPanel">
+              <svg><use href="#icon-settings"></use></svg>
+            </button>
+            <button id="recordButton" class="record-button" type="button" title="录音练习">
+              <svg><use href="#icon-mic"></use></svg>
+            </button>
+          </section>
+
+          <section id="settingsPanel" class="settings" aria-label="循环设置">
+            <label>
+              <span>重复</span>
+              <input id="repeatInput" type="number" min="1" max="12" value="3" />
+            </label>
+            <label>
+              <span>速度</span>
+              <input id="speedInput" type="range" min="0.65" max="1.1" step="0.05" value="0.9" />
+              <output id="speedOutput">0.90x</output>
+            </label>
+            <label>
+              <span>前后留白</span>
+              <input id="paddingInput" type="range" min="0" max="1.2" step="0.1" value="0.2" />
+              <output id="paddingOutput">0.2s</output>
+            </label>
+          </section>
+        </section>
+
+        <aside class="score-panel" aria-label="成绩">
+          <div class="panel-head">
+            <h2>成绩</h2>
+            <span id="recognitionStatus">语音: --</span>
+          </div>
+
+          <section class="score-card">
+            <div class="score-ring" aria-label="最新分数">
+              <span id="scoreValue">--</span>
+              <small>分数</small>
+            </div>
+            <div class="score-breakdown">
+              <p><span>准确度</span><b id="accuracyValue">--</b></p>
+              <p><span>语速</span><b id="paceValue">--</b></p>
+              <p><span>最佳</span><b id="bestValue">--</b></p>
+            </div>
+          </section>
+
+          <section class="recognized">
+            <h3>识别结果</h3>
+            <p id="recognizedText">还没有练习记录。</p>
+          </section>
+
+          <section class="manual-score">
+            <h3>自评分</h3>
+            <div id="manualButtons" class="manual-buttons">
+              <button type="button" data-score="1">1</button>
+              <button type="button" data-score="2">2</button>
+              <button type="button" data-score="3">3</button>
+              <button type="button" data-score="4">4</button>
+              <button type="button" data-score="5">5</button>
+            </div>
+          </section>
+
+          <section class="attempts">
+            <h3>最近练习</h3>
+            <ul id="attemptList"></ul>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,1220 @@
+(function () {
+  "use strict";
+
+  const STORAGE_PREFIX = "shadow-lab:";
+  const LAST_SESSION_KEY = `${STORAGE_PREFIX}last-session`;
+  const MEDIA_DB_NAME = "shadow-lab-media";
+  const MEDIA_STORE_NAME = "files";
+  const LAST_MEDIA_KEY = "last-media";
+  const DONE_SCORE = 82;
+  const PASSAGE_LIMITS = {
+    minWords: 24,
+    targetWords: 55,
+    maxWords: 92,
+    minDuration: 7,
+    targetDuration: 16,
+    maxDuration: 28,
+    hardMaxDuration: 38,
+    maxGap: 2.2,
+    maxSentences: 4,
+    hardMaxWords: 130,
+  };
+
+  const state = {
+    fileId: "empty",
+    fileName: "",
+    subtitleText: "",
+    rawEntries: [],
+    segments: [],
+    selectedIndex: 0,
+    filter: "all",
+    search: "",
+    progress: { attempts: {}, history: [] },
+    mediaUrl: "",
+    mediaName: "",
+    hasMedia: false,
+    isPlaying: false,
+    isRecording: false,
+    loopEnabled: true,
+    loopTimer: null,
+    mediaStopTimer: null,
+    recognition: null,
+    recognitionText: "",
+    recognitionAvailable: false,
+    restoredSession: false,
+    recorder: null,
+    recordedChunks: [],
+    recordStartAt: 0,
+    activeStream: null,
+    internalPause: false,
+  };
+
+  const els = {};
+
+  function init() {
+    bindElements();
+    bindEvents();
+    initSpeechRecognition();
+    restoreLastSession();
+    loadProgress();
+    renderAll();
+    if (state.restoredSession) toast("已恢复字幕");
+    restoreCachedMedia();
+  }
+
+  function bindElements() {
+    [
+      "assetInput",
+      "fileStatus",
+      "exportButton",
+      "resetButton",
+      "metricCompleted",
+      "metricAverage",
+      "metricPracticed",
+      "metricDue",
+      "searchInput",
+      "segmentList",
+      "mediaPlayer",
+      "ttsSurface",
+      "cueIndex",
+      "cueTime",
+      "cueState",
+      "cueText",
+      "prevButton",
+      "playButton",
+      "nextButton",
+      "loopButton",
+      "settingsButton",
+      "settingsPanel",
+      "recordButton",
+      "repeatInput",
+      "speedInput",
+      "speedOutput",
+      "paddingInput",
+      "paddingOutput",
+      "recognitionStatus",
+      "scoreValue",
+      "accuracyValue",
+      "paceValue",
+      "bestValue",
+      "recognizedText",
+      "manualButtons",
+      "attemptList",
+    ].forEach((id) => {
+      els[id] = document.getElementById(id);
+    });
+  }
+
+  function bindEvents() {
+    els.assetInput.addEventListener("change", handleAssetFiles);
+    els.searchInput.addEventListener("input", () => {
+      state.search = els.searchInput.value.trim().toLowerCase();
+      renderSegments();
+    });
+    document.querySelectorAll(".tab").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.filter = button.dataset.filter;
+        document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab === button));
+        renderSegments();
+      });
+    });
+    els.prevButton.addEventListener("click", () => selectSegment(state.selectedIndex - 1));
+    els.nextButton.addEventListener("click", () => selectSegment(state.selectedIndex + 1));
+    els.playButton.addEventListener("click", () => {
+      if (state.isPlaying) {
+        stopLoop();
+      } else {
+        startLoop();
+      }
+    });
+    els.loopButton.addEventListener("click", () => {
+      state.loopEnabled = !state.loopEnabled;
+      els.loopButton.classList.toggle("active", state.loopEnabled);
+      toast(state.loopEnabled ? "循环已开启" : "循环已关闭");
+    });
+    els.settingsButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleSettings();
+    });
+    els.settingsPanel.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+    document.addEventListener("click", closeSettings);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeSettings();
+    });
+    els.recordButton.addEventListener("click", () => {
+      if (state.isRecording) stopRecording();
+      else startRecording();
+    });
+    els.repeatInput.addEventListener("change", () => {
+      els.repeatInput.value = clamp(Number(els.repeatInput.value) || 3, 1, 12);
+    });
+    els.speedInput.addEventListener("input", () => {
+      els.speedOutput.textContent = `${Number(els.speedInput.value).toFixed(2)}x`;
+    });
+    els.paddingInput.addEventListener("input", () => {
+      els.paddingOutput.textContent = `${Number(els.paddingInput.value).toFixed(1)}s`;
+    });
+    els.manualButtons.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-score]");
+      if (!button) return;
+      saveManualScore(Number(button.dataset.score));
+    });
+    els.exportButton.addEventListener("click", exportProgress);
+    els.resetButton.addEventListener("click", resetProgress);
+    els.mediaPlayer.addEventListener("pause", () => {
+      if (state.hasMedia && !state.mediaStopTimer && !state.internalPause) setPlaying(false);
+    });
+  }
+
+  async function handleAssetFiles(event) {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+
+    const subtitleFile = files.find(isSubtitleFile);
+    const mediaFile = files.find(isMediaFile);
+    let loadedSubtitle = false;
+    let loadedMedia = false;
+
+    if (subtitleFile) {
+      loadedSubtitle = await loadSubtitleFile(subtitleFile, { silent: true });
+    }
+
+    if (mediaFile) {
+      loadMediaFile(mediaFile);
+      cacheMediaFile(mediaFile, { silentSuccess: true });
+      loadedMedia = true;
+    }
+
+    if (loadedSubtitle && loadedMedia) {
+      toast(`${state.segments.length} 段练习 + 媒体已就绪`);
+    } else if (loadedSubtitle) {
+      toast(`${state.segments.length} 段练习已就绪`);
+    } else if (loadedMedia) {
+      toast(state.segments.length ? "媒体已加载" : "媒体已加载，请再导入字幕");
+    } else {
+      toast("请选择字幕或音视频文件");
+    }
+
+    event.target.value = "";
+  }
+
+  async function loadSubtitleFile(file, options = {}) {
+    const text = await file.text();
+    const entries = parseSrt(text);
+    if (!entries.length) {
+      if (!options.silent) toast("没有找到有效字幕");
+      return false;
+    }
+    state.fileName = file.name;
+    state.fileId = makeFileId(file.name, text);
+    state.subtitleText = text;
+    state.rawEntries = entries;
+    state.segments = segmentEntries(entries);
+    state.selectedIndex = 0;
+    loadProgress();
+    persistLastSession();
+    renderAll();
+    if (!options.silent) toast(`${state.segments.length} 段练习已就绪`);
+    return true;
+  }
+
+  function loadMediaFile(file) {
+    loadMediaBlob(file, {
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      lastModified: file.lastModified,
+    });
+  }
+
+  function loadMediaBlob(blob, meta = {}) {
+    if (state.mediaUrl) URL.revokeObjectURL(state.mediaUrl);
+    state.mediaUrl = URL.createObjectURL(blob);
+    state.mediaName = meta.name || "";
+    state.hasMedia = true;
+    els.mediaPlayer.src = state.mediaUrl;
+    els.mediaPlayer.playbackRate = Number(els.speedInput.value);
+    document.querySelector(".media-frame").classList.add("has-media");
+  }
+
+  function isSubtitleFile(file) {
+    const name = file.name.toLowerCase();
+    return name.endsWith(".srt") || name.endsWith(".vtt") || file.type === "text/plain";
+  }
+
+  function isMediaFile(file) {
+    const name = file.name.toLowerCase();
+    return (
+      file.type.startsWith("audio/") ||
+      file.type.startsWith("video/") ||
+      /\.(mp3|m4a|wav|aac|aiff|aif|ogg|flac|mp4|m4v|mov|webm|mkv)$/i.test(name)
+    );
+  }
+
+  function parseSrt(input) {
+    const text = input.replace(/\r/g, "").replace(/^\uFEFF/, "").trim();
+    const blocks = text.split(/\n{2,}/);
+    const entries = [];
+    for (const block of blocks) {
+      const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
+      const timeIndex = lines.findIndex((line) => line.includes("-->"));
+      if (timeIndex < 0) continue;
+      const [startRaw, endRaw] = lines[timeIndex].split("-->").map((part) => part.trim());
+      const start = parseTimestamp(startRaw);
+      const end = parseTimestamp(endRaw);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      const caption = lines
+        .slice(timeIndex + 1)
+        .join(" ")
+        .replace(/<[^>]+>/g, "")
+        .replace(/\{\\.*?\}/g, "")
+        .replace(/^[-–> ]+/, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!caption) continue;
+      entries.push({ start, end: Math.max(end, start + 0.2), text: caption });
+    }
+    return entries;
+  }
+
+  function parseTimestamp(value) {
+    const match = value.match(/(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3})/);
+    if (!match) return NaN;
+    const hours = Number(match[1] || 0);
+    const minutes = Number(match[2]);
+    const seconds = Number(match[3]);
+    const millis = Number(match[4].padEnd(3, "0"));
+    return hours * 3600 + minutes * 60 + seconds + millis / 1000;
+  }
+
+  function segmentEntries(entries) {
+    const sentenceUnits = buildSentenceUnits(entries);
+    const chunks = [];
+    let bucket = [];
+
+    const flush = () => {
+      if (!bucket.length) return;
+      chunks.push(bucket);
+      bucket = [];
+    };
+
+    for (const unit of sentenceUnits) {
+      const gap = bucket.length ? unit.start - bucket[bucket.length - 1].end : 0;
+      if (bucket.length && gap > PASSAGE_LIMITS.maxGap) {
+        const stats = passageStats(bucket);
+        if (stats.words >= PASSAGE_LIMITS.minWords || stats.duration >= PASSAGE_LIMITS.minDuration) {
+          flush();
+        }
+      }
+
+      if (bucket.length && shouldCloseBeforeAdding(bucket, unit)) flush();
+
+      bucket.push(unit);
+
+      const stats = passageStats(bucket);
+      const sentenceCount = bucket.reduce((total, item) => total + (item.sentenceCount || 1), 0);
+      const hasEnoughBody =
+        stats.words >= PASSAGE_LIMITS.minWords &&
+        stats.duration >= PASSAGE_LIMITS.minDuration;
+      const oneLongCompleteThought =
+        sentenceCount === 1 &&
+        hasEnoughBody &&
+        (stats.words >= PASSAGE_LIMITS.targetWords || stats.duration >= PASSAGE_LIMITS.targetDuration);
+      const reachedTarget =
+        (sentenceCount >= 2 || oneLongCompleteThought) &&
+        hasEnoughBody &&
+        (stats.words >= PASSAGE_LIMITS.targetWords ||
+          stats.duration >= PASSAGE_LIMITS.targetDuration ||
+          sentenceCount >= 3);
+      const reachedSoftLimit =
+        hasEnoughBody &&
+        (stats.words >= PASSAGE_LIMITS.maxWords ||
+          stats.duration >= PASSAGE_LIMITS.maxDuration ||
+          sentenceCount >= PASSAGE_LIMITS.maxSentences);
+      const hardBreak =
+        stats.words >= PASSAGE_LIMITS.hardMaxWords ||
+        stats.duration >= PASSAGE_LIMITS.hardMaxDuration;
+
+      if (reachedTarget || reachedSoftLimit || hardBreak) flush();
+    }
+    flush();
+    return mergeShortChunks(chunks)
+      .map((chunk, index) => makeSegment(chunk, index))
+      .filter((segment) => segment.text.length > 1);
+  }
+
+  function shouldCloseBeforeAdding(bucket, nextUnit) {
+    const currentStats = passageStats(bucket);
+    const currentSentences = bucket.reduce((total, item) => total + (item.sentenceCount || 1), 0);
+    const currentCanStand =
+      currentStats.words >= PASSAGE_LIMITS.minWords &&
+      (currentSentences >= 2 ||
+        currentStats.words >= PASSAGE_LIMITS.targetWords ||
+        currentStats.duration >= PASSAGE_LIMITS.targetDuration);
+    if (!currentCanStand) return false;
+
+    const combined = bucket.concat(nextUnit);
+    const combinedStats = passageStats(combined);
+    const combinedSentences = combined.reduce((total, item) => total + (item.sentenceCount || 1), 0);
+    return (
+      combinedStats.words > PASSAGE_LIMITS.maxWords ||
+      combinedStats.duration > PASSAGE_LIMITS.maxDuration ||
+      combinedSentences > PASSAGE_LIMITS.maxSentences
+    );
+  }
+
+  function buildSentenceUnits(entries) {
+    const units = [];
+    let tokens = [];
+
+    const flush = (count = tokens.length) => {
+      const chunk = tokens.slice(0, count);
+      if (!chunk.length) return;
+      const text = cleanDisplayText(chunk.map((token) => token.text).join(" "));
+      if (text) {
+        units.push({
+          start: chunk[0].start,
+          end: chunk[chunk.length - 1].end,
+          text,
+          sentenceCount: Math.max(1, countSentenceEndings(text)),
+        });
+      }
+      tokens = tokens.slice(count);
+    };
+
+    for (const entry of entries) {
+      const entryTokens = timedTokensForEntry(entry);
+      for (const token of entryTokens) {
+        const gap = tokens.length ? token.start - tokens[tokens.length - 1].end : 0;
+        if (tokens.length && gap > PASSAGE_LIMITS.maxGap && unitStats(tokens).words >= 8) flush();
+
+        tokens.push(token);
+        const stats = unitStats(tokens);
+        const cleanSentenceEnd = isSentenceEndToken(token.text) && !hasDanglingEnding(stats.text);
+        const softPhraseEnd = isSoftBreakToken(token.text) && stats.words >= PASSAGE_LIMITS.targetWords;
+        const overflow =
+          stats.words >= PASSAGE_LIMITS.maxWords ||
+          stats.duration >= PASSAGE_LIMITS.maxDuration;
+        const hardOverflow =
+          stats.words >= PASSAGE_LIMITS.hardMaxWords ||
+          stats.duration >= PASSAGE_LIMITS.hardMaxDuration;
+
+        if (cleanSentenceEnd || softPhraseEnd) flush();
+        else if (overflow || hardOverflow) {
+          const breakIndex = bestSoftBreakIndex(tokens);
+          flush(breakIndex >= 0 ? breakIndex + 1 : tokens.length);
+        }
+      }
+    }
+    flush();
+    return units.length ? units : entries;
+  }
+
+  function timedTokensForEntry(entry) {
+    const words = entry.text.match(/\S+/g) || [];
+    if (!words.length) return [];
+    const duration = Math.max(0.2, entry.end - entry.start);
+    return words.map((word, index) => {
+      const start = entry.start + (duration * index) / words.length;
+      const end = entry.start + (duration * (index + 1)) / words.length;
+      return { text: word, start, end: Math.max(end, start + 0.02) };
+    });
+  }
+
+  function unitStats(tokens) {
+    const text = cleanDisplayText(tokens.map((token) => token.text).join(" "));
+    return {
+      text,
+      duration: tokens[tokens.length - 1].end - tokens[0].start,
+      words: tokenizeWords(text).length,
+    };
+  }
+
+  function bestSoftBreakIndex(tokens) {
+    let bestIndex = -1;
+    let bestScore = Infinity;
+    for (let index = 0; index < tokens.length - 1; index += 1) {
+      const stats = unitStats(tokens.slice(0, index + 1));
+      if (stats.words < PASSAGE_LIMITS.minWords || stats.duration < PASSAGE_LIMITS.minDuration) continue;
+
+      const current = tokens[index].text;
+      const next = tokens[index + 1] && tokens[index + 1].text;
+      const sentenceEnd = isSentenceEndToken(current);
+      const softBreak = isSoftBreakToken(current);
+      const clauseBreak = startsNewClause(next);
+      if (!sentenceEnd && !softBreak && !clauseBreak) continue;
+
+      const score =
+        Math.abs(stats.words - PASSAGE_LIMITS.targetWords) +
+        Math.abs(stats.duration - PASSAGE_LIMITS.targetDuration) * 2 +
+        (sentenceEnd ? -18 : 0) +
+        (softBreak ? -8 : 0) +
+        (clauseBreak ? -3 : 0);
+      if (score < bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    }
+    return bestIndex;
+  }
+
+  function mergeShortChunks(chunks) {
+    const merged = [];
+    for (const chunk of chunks) {
+      if (!chunk.length) continue;
+      const stats = passageStats(chunk);
+      const previous = merged[merged.length - 1];
+      if (previous && shouldMergeShortChunk(previous, chunk, stats)) {
+        previous.push(...chunk);
+      } else {
+        merged.push(chunk.slice());
+      }
+    }
+    return merged;
+  }
+
+  function shouldMergeShortChunk(previous, chunk, stats) {
+    const combined = previous.concat(chunk);
+    const combinedStats = passageStats(combined);
+    const isShort = stats.words < PASSAGE_LIMITS.minWords || stats.duration < PASSAGE_LIMITS.minDuration;
+    const stillPractical =
+      combinedStats.words <= PASSAGE_LIMITS.hardMaxWords &&
+      combinedStats.duration <= PASSAGE_LIMITS.hardMaxDuration;
+    return isShort && stillPractical;
+  }
+
+  function passageStats(bucket) {
+    const text = bucket.map((item) => item.text).join(" ");
+    return {
+      text,
+      duration: bucket[bucket.length - 1].end - bucket[0].start,
+      words: tokenizeWords(text).length,
+    };
+  }
+
+  function countSentenceEndings(text) {
+    const matches = text.match(/[.!?。！？]+["')\]]?/g);
+    return matches ? matches.length : 0;
+  }
+
+  function isSentenceEndToken(token) {
+    return /[.!?。！？]+["')\]]?$/.test(token) && !isLikelyAbbreviation(token);
+  }
+
+  function isSoftBreakToken(token) {
+    return /[,;:，；：]["')\]]?$/.test(token);
+  }
+
+  function startsNewClause(token) {
+    if (!token) return false;
+    const normalized = token.toLowerCase().replace(/^[("'[\]]+|[,.!?;:，。！？；："')\]]+$/g, "");
+    return /^(and|but|so|then|because|where|which|when|while|if|um|uh|anyway|actually|also|now)$/.test(normalized);
+  }
+
+  function isLikelyAbbreviation(token) {
+    const normalized = token.toLowerCase().replace(/["')\]]+$/g, "");
+    return /^(mr|mrs|ms|dr|prof|sr|jr|st|vs|etc|e\.g|i\.e)\.$/.test(normalized);
+  }
+
+  function hasDanglingEnding(text) {
+    const normalized = text.toLowerCase().replace(/[.!?。！？"')\]]+$/g, "").trim();
+    const last = normalized.split(/\s+/).pop() || "";
+    return /^(and|but|or|so|because|while|though|although|if|when|that|which|who|to|of|in|on|at|for|with|from|by|as|is|are|was|were|be|been|being|the|a|an)$/.test(last);
+  }
+
+  function makeSegment(bucket, index) {
+    const start = bucket[0].start;
+    const end = bucket[bucket.length - 1].end;
+    return {
+      id: `seg-${index + 1}`,
+      index,
+      start,
+      end,
+      text: cleanDisplayText(bucket.map((item) => item.text).join(" ")),
+      entryCount: bucket.length,
+    };
+  }
+
+  function cleanDisplayText(text) {
+    return text
+      .replace(/\s+([,.!?;:])/g, "$1")
+      .replace(/\s+/g, " ")
+      .replace(/\[ __ \]/g, "")
+      .trim();
+  }
+
+  function renderAll() {
+    renderStatus();
+    renderMetrics();
+    renderSegments();
+    renderCue();
+    renderScore();
+    renderAttempts();
+  }
+
+  function renderStatus() {
+    const segmentCount = state.segments.length;
+    els.fileStatus.textContent = segmentCount
+      ? `${state.fileName} · ${segmentCount} 段练习`
+      : "未加载字幕";
+    els.recognitionStatus.textContent = state.recognitionAvailable ? "语音: 开" : "语音: 关";
+  }
+
+  function renderMetrics() {
+    const total = state.segments.length;
+    const stats = collectStats();
+    els.metricCompleted.textContent = total ? `${Math.round((stats.done / total) * 100)}%` : "0%";
+    els.metricAverage.textContent = stats.scored ? `${Math.round(stats.average)}` : "--";
+    els.metricPracticed.textContent = String(stats.attempts);
+    els.metricDue.textContent = String(Math.max(0, total - stats.done));
+  }
+
+  function renderSegments() {
+    els.segmentList.innerHTML = "";
+    const visible = state.segments.filter((segment) => {
+      const best = bestScore(segment.id);
+      const done = best >= DONE_SCORE;
+      if (state.filter === "due" && done) return false;
+      if (state.filter === "done" && !done) return false;
+      if (state.search && !segment.text.toLowerCase().includes(state.search)) return false;
+      return true;
+    });
+
+    const fragment = document.createDocumentFragment();
+    visible.forEach((segment) => {
+      const li = document.createElement("li");
+      const button = document.createElement("button");
+      const best = bestScore(segment.id);
+      const scoreClass = best >= DONE_SCORE ? "good" : best ? "mid" : "";
+      button.className = `segment-item${segment.index === state.selectedIndex ? " active" : ""}`;
+      button.type = "button";
+      button.innerHTML = `
+        <span class="seg-no">${segment.index + 1}</span>
+        <span class="seg-copy">
+          <p>${escapeHtml(segment.text)}</p>
+          <span>${formatTime(segment.start)} - ${formatTime(segment.end)}</span>
+        </span>
+        <span class="seg-score ${scoreClass}">${best ? Math.round(best) : "--"}</span>
+      `;
+      button.addEventListener("click", () => selectSegment(segment.index));
+      li.appendChild(button);
+      fragment.appendChild(li);
+    });
+    els.segmentList.appendChild(fragment);
+  }
+
+  function renderCue() {
+    const segment = currentSegment();
+    if (!segment) {
+      els.cueIndex.textContent = "--";
+      els.cueTime.textContent = "00:00.000 - 00:00.000";
+      els.cueState.textContent = state.isPlaying ? "播放中" : "待机";
+      els.cueText.textContent = "导入字幕开始练习。";
+      return;
+    }
+    els.cueIndex.textContent = `${segment.index + 1}/${state.segments.length}`;
+    els.cueTime.textContent = `${formatTime(segment.start)} - ${formatTime(segment.end)}`;
+    els.cueState.textContent = state.isRecording ? "录音中" : state.isPlaying ? "循环中" : "就绪";
+    els.cueText.textContent = segment.text;
+  }
+
+  function renderScore() {
+    const segment = currentSegment();
+    const latest = segment ? latestAttempt(segment.id) : null;
+    const best = segment ? bestScore(segment.id) : 0;
+    const score = latest && Number.isFinite(latest.score) ? latest.score : null;
+    const accuracy = latest && Number.isFinite(latest.accuracy) ? latest.accuracy : null;
+    const pace = latest && Number.isFinite(latest.pace) ? latest.pace : null;
+    els.scoreValue.textContent = score === null ? "--" : Math.round(score);
+    document.querySelector(".score-ring").style.setProperty("--score", `${score || 0}%`);
+    els.accuracyValue.textContent = accuracy === null ? "--" : `${Math.round(accuracy)}`;
+    els.paceValue.textContent = pace === null ? "--" : `${Math.round(pace)}`;
+    els.bestValue.textContent = best ? `${Math.round(best)}` : "--";
+    els.recognizedText.textContent = latest && latest.recognized ? latest.recognized : "还没有练习记录。";
+    document.querySelectorAll("#manualButtons button").forEach((button) => {
+      button.classList.toggle("active", latest && latest.manual === Number(button.dataset.score));
+    });
+  }
+
+  function renderAttempts() {
+    els.attemptList.innerHTML = "";
+    const items = state.progress.history.slice(0, 8);
+    if (!items.length) {
+      const li = document.createElement("li");
+      li.innerHTML = "<b>--</b><p><span>暂无练习记录</span>练一次后这里会显示历史。</p>";
+      els.attemptList.appendChild(li);
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    for (const attempt of items) {
+      const segment = state.segments.find((item) => item.id === attempt.segmentId);
+      const li = document.createElement("li");
+      li.innerHTML = `
+        <b>${attempt.score ? Math.round(attempt.score) : attempt.manual ? attempt.manual : "--"}</b>
+        <p><span>${segment ? escapeHtml(segment.text) : "之前的练习段"}</span>${new Date(attempt.at).toLocaleString()}</p>
+      `;
+      fragment.appendChild(li);
+    }
+    els.attemptList.appendChild(fragment);
+  }
+
+  function selectSegment(index) {
+    if (!state.segments.length) return;
+    state.selectedIndex = clamp(index, 0, state.segments.length - 1);
+    persistLastSession();
+    closeSettings();
+    stopLoop();
+    renderSegments();
+    renderCue();
+    renderScore();
+  }
+
+  function currentSegment() {
+    return state.segments[state.selectedIndex] || null;
+  }
+
+  function toggleSettings() {
+    const isOpen = els.settingsPanel.classList.toggle("open");
+    els.settingsButton.classList.toggle("active", isOpen);
+    els.settingsButton.setAttribute("aria-expanded", String(isOpen));
+  }
+
+  function closeSettings() {
+    if (!els.settingsPanel || !els.settingsButton) return;
+    els.settingsPanel.classList.remove("open");
+    els.settingsButton.classList.remove("active");
+    els.settingsButton.setAttribute("aria-expanded", "false");
+  }
+
+  async function startLoop() {
+    const segment = currentSegment();
+    if (!segment) {
+      toast("请先导入字幕");
+      return;
+    }
+    stopLoop({ silent: true });
+    setPlaying(true);
+    const repeats = state.loopEnabled ? Number(els.repeatInput.value) || 3 : 1;
+    for (let i = 0; i < repeats && state.isPlaying; i += 1) {
+      if (state.hasMedia) await playMediaSegment(segment);
+      else await speakSegment(segment);
+      if (state.loopEnabled && i < repeats - 1 && state.isPlaying) await wait(450);
+    }
+    setPlaying(false);
+  }
+
+  function stopLoop(options = {}) {
+    clearTimeout(state.loopTimer);
+    clearTimeout(state.mediaStopTimer);
+    state.loopTimer = null;
+    state.mediaStopTimer = null;
+    if (state.hasMedia) els.mediaPlayer.pause();
+    window.speechSynthesis.cancel();
+    setPlaying(false);
+    if (!options.silent) toast("已停止");
+  }
+
+  function setPlaying(value) {
+    state.isPlaying = value;
+    els.playButton.innerHTML = `<svg><use href="#${value ? "icon-pause" : "icon-play"}"></use></svg>`;
+    renderCue();
+  }
+
+  function playMediaSegment(segment) {
+    return new Promise((resolve) => {
+      const padding = Number(els.paddingInput.value) || 0;
+      const start = Math.max(0, segment.start - padding);
+      const end = segment.end + padding;
+      els.mediaPlayer.playbackRate = Number(els.speedInput.value);
+      els.mediaPlayer.currentTime = start;
+      const finish = () => {
+        clearTimeout(state.mediaStopTimer);
+        state.mediaStopTimer = null;
+        state.internalPause = true;
+        els.mediaPlayer.pause();
+        setTimeout(() => {
+          state.internalPause = false;
+        }, 0);
+        resolve();
+      };
+      const tick = () => {
+        if (!state.isPlaying) return finish();
+        if (els.mediaPlayer.currentTime >= end) return finish();
+        state.mediaStopTimer = setTimeout(tick, 80);
+      };
+      els.mediaPlayer.play().then(tick).catch(() => {
+        toast("媒体播放被浏览器拦截");
+        finish();
+      });
+    });
+  }
+
+  function speakSegment(segment) {
+    return new Promise((resolve) => {
+      const utterance = new SpeechSynthesisUtterance(segment.text);
+      utterance.lang = guessSpeechLang(segment.text);
+      utterance.rate = Number(els.speedInput.value);
+      utterance.onend = resolve;
+      utterance.onerror = resolve;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    });
+  }
+
+  async function startRecording() {
+    const segment = currentSegment();
+    if (!segment) {
+      toast("请先导入字幕");
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      toast("无法使用麦克风");
+      return;
+    }
+    try {
+      state.activeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      state.recordedChunks = [];
+      state.recognitionText = "";
+      state.recorder = new MediaRecorder(state.activeStream);
+      state.recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size) state.recordedChunks.push(event.data);
+      };
+      state.recorder.onstop = finalizeRecording;
+      state.recordStartAt = performance.now();
+      state.recorder.start();
+      startSpeechRecognition(segment.text);
+      state.isRecording = true;
+      els.recordButton.classList.add("recording");
+      els.recordButton.innerHTML = '<svg><use href="#icon-stop"></use></svg>';
+      renderCue();
+      toast("录音中");
+    } catch (error) {
+      toast("麦克风权限被拒绝");
+    }
+  }
+
+  function stopRecording() {
+    if (state.recorder && state.recorder.state !== "inactive") state.recorder.stop();
+    stopSpeechRecognition();
+    state.isRecording = false;
+    els.recordButton.classList.remove("recording");
+    els.recordButton.innerHTML = '<svg><use href="#icon-mic"></use></svg>';
+    if (state.activeStream) {
+      state.activeStream.getTracks().forEach((track) => track.stop());
+      state.activeStream = null;
+    }
+    renderCue();
+  }
+
+  function finalizeRecording() {
+    const segment = currentSegment();
+    if (!segment) return;
+    const duration = Math.max(0.1, (performance.now() - state.recordStartAt) / 1000);
+    const recognized = state.recognitionText.trim();
+    const auto = recognized ? scoreAttempt(segment.text, recognized, segment.end - segment.start, duration) : null;
+    const attempt = {
+      id: `attempt-${Date.now()}`,
+      segmentId: segment.id,
+      at: Date.now(),
+      duration,
+      recognized,
+      score: auto ? auto.score : null,
+      accuracy: auto ? auto.accuracy : null,
+      pace: auto ? auto.pace : null,
+      manual: null,
+    };
+    saveAttempt(attempt);
+    renderAll();
+    toast(recognized ? `得分 ${Math.round(auto.score)}` : "已保存，可手动评分");
+  }
+
+  function initSpeechRecognition() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      state.recognitionAvailable = false;
+      return;
+    }
+    state.recognitionAvailable = true;
+    state.recognition = new SpeechRecognition();
+    state.recognition.continuous = true;
+    state.recognition.interimResults = true;
+    state.recognition.onresult = (event) => {
+      let text = "";
+      for (let i = 0; i < event.results.length; i += 1) {
+        text += event.results[i][0].transcript + " ";
+      }
+      state.recognitionText = text;
+      els.recognizedText.textContent = text.trim() || "正在听...";
+    };
+    state.recognition.onerror = () => {
+      state.recognitionText = state.recognitionText || "";
+    };
+  }
+
+  function startSpeechRecognition(targetText) {
+    if (!state.recognitionAvailable || !state.recognition) return;
+    try {
+      state.recognition.lang = guessSpeechLang(targetText);
+      state.recognition.start();
+    } catch (error) {
+      // Starting twice throws in Chromium; the current session can continue.
+    }
+  }
+
+  function stopSpeechRecognition() {
+    if (!state.recognitionAvailable || !state.recognition) return;
+    try {
+      state.recognition.stop();
+    } catch (error) {
+      // Recognition may already be stopped.
+    }
+  }
+
+  function saveManualScore(value) {
+    const segment = currentSegment();
+    if (!segment) return;
+    const latest = latestAttempt(segment.id);
+    const attempt = latest || {
+      id: `attempt-${Date.now()}`,
+      segmentId: segment.id,
+      at: Date.now(),
+      duration: null,
+      recognized: "",
+      score: null,
+      accuracy: null,
+      pace: null,
+      manual: null,
+    };
+    attempt.manual = value;
+    if (!attempt.score) attempt.score = value * 20;
+    saveAttempt(attempt, { replace: Boolean(latest && latest.id === attempt.id) });
+    renderAll();
+    toast(`自评分 ${value}`);
+  }
+
+  function scoreAttempt(target, spoken, targetDuration, spokenDuration) {
+    const targetWords = tokenizeWords(target);
+    const spokenWords = tokenizeWords(spoken);
+    if (!targetWords.length || !spokenWords.length) {
+      return { score: 0, accuracy: 0, pace: 0 };
+    }
+    const distance = levenshtein(targetWords, spokenWords);
+    const accuracy = clamp((1 - distance / Math.max(targetWords.length, spokenWords.length)) * 100, 0, 100);
+    const ratio = spokenDuration && targetDuration ? spokenDuration / Math.max(0.1, targetDuration) : 1;
+    const pace = clamp(100 - Math.abs(1 - ratio) * 60, 0, 100);
+    const score = Math.round(accuracy * 0.82 + pace * 0.18);
+    return { score, accuracy, pace };
+  }
+
+  function tokenizeWords(text) {
+    const normalized = normalizeText(text);
+    if (!normalized) return [];
+    if (/[\u4e00-\u9fff]/.test(normalized)) {
+      return normalized.replace(/\s+/g, "").split("");
+    }
+    return normalized.split(/\s+/).filter(Boolean);
+  }
+
+  function normalizeText(text) {
+    return text
+      .toLowerCase()
+      .replace(/&/g, " and ")
+      .replace(/[“”]/g, '"')
+      .replace(/[’']/g, "")
+      .replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function levenshtein(a, b) {
+    const rows = a.length + 1;
+    const cols = b.length + 1;
+    const dp = Array.from({ length: rows }, () => Array(cols).fill(0));
+    for (let i = 0; i < rows; i += 1) dp[i][0] = i;
+    for (let j = 0; j < cols; j += 1) dp[0][j] = j;
+    for (let i = 1; i < rows; i += 1) {
+      for (let j = 1; j < cols; j += 1) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+      }
+    }
+    return dp[a.length][b.length];
+  }
+
+  function saveAttempt(attempt, options = {}) {
+    const attempts = state.progress.attempts[attempt.segmentId] || [];
+    if (options.replace) {
+      const index = attempts.findIndex((item) => item.id === attempt.id);
+      if (index >= 0) attempts[index] = attempt;
+      else attempts.unshift(attempt);
+    } else {
+      attempts.unshift(attempt);
+    }
+    state.progress.attempts[attempt.segmentId] = attempts.slice(0, 20);
+    state.progress.history = [
+      attempt,
+      ...state.progress.history.filter((item) => item.id !== attempt.id),
+    ].slice(0, 80);
+    persistProgress();
+  }
+
+  function latestAttempt(segmentId) {
+    return (state.progress.attempts[segmentId] || [])[0] || null;
+  }
+
+  function bestScore(segmentId) {
+    const attempts = state.progress.attempts[segmentId] || [];
+    return attempts.reduce((best, attempt) => Math.max(best, attempt.score || (attempt.manual ? attempt.manual * 20 : 0)), 0);
+  }
+
+  function collectStats() {
+    let done = 0;
+    let attempts = 0;
+    let totalScore = 0;
+    let scored = 0;
+    for (const segment of state.segments) {
+      const segmentAttempts = state.progress.attempts[segment.id] || [];
+      attempts += segmentAttempts.length;
+      const best = bestScore(segment.id);
+      if (best >= DONE_SCORE) done += 1;
+      if (best) {
+        totalScore += best;
+        scored += 1;
+      }
+    }
+    return {
+      done,
+      attempts,
+      scored,
+      average: scored ? totalScore / scored : 0,
+    };
+  }
+
+  function loadProgress() {
+    try {
+      const raw = localStorage.getItem(STORAGE_PREFIX + state.fileId);
+      state.progress = raw ? JSON.parse(raw) : { attempts: {}, history: [] };
+    } catch (error) {
+      state.progress = { attempts: {}, history: [] };
+    }
+  }
+
+  function persistProgress() {
+    localStorage.setItem(STORAGE_PREFIX + state.fileId, JSON.stringify(state.progress));
+  }
+
+  function restoreLastSession() {
+    try {
+      const raw = localStorage.getItem(LAST_SESSION_KEY);
+      const saved = raw ? JSON.parse(raw) : null;
+      if (!saved || !saved.text || !saved.name || !saved.fileId) return;
+
+      const entries = parseSrt(saved.text);
+      if (!entries.length) {
+        localStorage.removeItem(LAST_SESSION_KEY);
+        return;
+      }
+
+      state.fileName = saved.name;
+      state.fileId = saved.fileId;
+      state.subtitleText = saved.text;
+      state.rawEntries = entries;
+      state.segments = segmentEntries(entries);
+      state.selectedIndex = clamp(Number(saved.selectedIndex) || 0, 0, Math.max(0, state.segments.length - 1));
+      state.restoredSession = true;
+    } catch (error) {
+      localStorage.removeItem(LAST_SESSION_KEY);
+    }
+  }
+
+  function persistLastSession() {
+    if (!state.subtitleText || !state.segments.length) return;
+    try {
+      localStorage.setItem(
+        LAST_SESSION_KEY,
+        JSON.stringify({
+          version: 1,
+          name: state.fileName,
+          fileId: state.fileId,
+          text: state.subtitleText,
+          selectedIndex: state.selectedIndex,
+          savedAt: Date.now(),
+        })
+      );
+    } catch (error) {
+      toast("字幕太大，刷新后可能无法恢复");
+    }
+  }
+
+  async function restoreCachedMedia() {
+    try {
+      const record = await mediaDbRequest("readonly", (store) => store.get(LAST_MEDIA_KEY));
+      if (!record || !record.blob) return;
+      loadMediaBlob(record.blob, record);
+      toast(`已恢复媒体${record.name ? `: ${record.name}` : ""}`);
+    } catch (error) {
+      // Media caching is a convenience layer; SRT practice still works without it.
+    }
+  }
+
+  async function cacheMediaFile(file, options = {}) {
+    if (!file || !window.indexedDB) return;
+    try {
+      await mediaDbRequest("readwrite", (store) =>
+        store.put(
+          {
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            lastModified: file.lastModified,
+            savedAt: Date.now(),
+            blob: file,
+          },
+          LAST_MEDIA_KEY
+        )
+      );
+      if (!options.silentSuccess) toast("媒体已缓存，刷新后可恢复");
+    } catch (error) {
+      toast(isQuotaError(error) ? "媒体太大，无法自动恢复" : "媒体缓存不可用");
+    }
+  }
+
+  function mediaDbRequest(mode, action) {
+    return openMediaDb().then(
+      (db) =>
+        new Promise((resolve, reject) => {
+          const transaction = db.transaction(MEDIA_STORE_NAME, mode);
+          let result;
+          const request = action(transaction.objectStore(MEDIA_STORE_NAME));
+          request.onsuccess = () => {
+            result = request.result;
+          };
+          request.onerror = () => reject(request.error || new Error("Media cache request failed"));
+          transaction.oncomplete = () => {
+            db.close();
+            resolve(result);
+          };
+          transaction.onerror = () => {
+            db.close();
+            reject(transaction.error || request.error || new Error("Media cache transaction failed"));
+          };
+          transaction.onabort = () => {
+            db.close();
+            reject(transaction.error || request.error || new Error("Media cache transaction aborted"));
+          };
+        })
+    );
+  }
+
+  function openMediaDb() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error("IndexedDB unavailable"));
+        return;
+      }
+
+      const request = window.indexedDB.open(MEDIA_DB_NAME, 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(MEDIA_STORE_NAME)) {
+          db.createObjectStore(MEDIA_STORE_NAME);
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("Media cache open failed"));
+      request.onblocked = () => reject(new Error("Media cache blocked"));
+    });
+  }
+
+  function isQuotaError(error) {
+    return error && (error.name === "QuotaExceededError" || error.name === "NS_ERROR_DOM_QUOTA_REACHED");
+  }
+
+  function exportProgress() {
+    const payload = {
+      fileName: state.fileName,
+      exportedAt: new Date().toISOString(),
+      segments: state.segments,
+      progress: state.progress,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${state.fileName || "shadow-lab"}-progress.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    toast("进度已导出");
+  }
+
+  function resetProgress() {
+    if (!state.segments.length) return;
+    localStorage.removeItem(STORAGE_PREFIX + state.fileId);
+    state.progress = { attempts: {}, history: [] };
+    renderAll();
+    toast("进度已重置");
+  }
+
+  function makeFileId(name, text) {
+    let hash = 2166136261;
+    const sample = `${name}:${text.length}:${text.slice(0, 2000)}:${text.slice(-2000)}`;
+    for (let i = 0; i < sample.length; i += 1) {
+      hash ^= sample.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `${name.replace(/[^\w.-]+/g, "_")}:${(hash >>> 0).toString(16)}`;
+  }
+
+  function guessSpeechLang(text) {
+    return /[\u4e00-\u9fff]/.test(text) ? "zh-CN" : "en-US";
+  }
+
+  function formatTime(seconds) {
+    const safe = Math.max(0, seconds || 0);
+    const mins = Math.floor(safe / 60);
+    const secs = Math.floor(safe % 60);
+    const millis = Math.round((safe % 1) * 1000);
+    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
+  }
+
+  function wait(ms) {
+    return new Promise((resolve) => {
+      state.loopTimer = setTimeout(resolve, ms);
+    });
+  }
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function toast(message) {
+    if (message) console.info(`[Shadow Lab] ${message}`);
+  }
+
+  window.ShadowLabCore = {
+    parseSrt,
+    parseTimestamp,
+    segmentEntries,
+    normalizeText,
+    tokenizeWords,
+    levenshtein,
+    scoreAttempt,
+    formatTime,
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
