@@ -622,11 +622,13 @@ svg {
 
 .cue {
   position: relative;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   min-height: 0;
-  max-height: 190px;
+  height: clamp(180px, 21vh, 230px);
   margin-top: 0;
-  padding: 16px 18px;
-  overflow: auto;
+  padding: 14px 18px 12px;
+  overflow: hidden;
   border: 1.5px solid var(--line);
   border-radius: var(--radius);
   background:
@@ -706,17 +708,22 @@ svg {
 #cueText {
   position: relative;
   margin: 10px 0 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 4px 8px 0;
   color: var(--ink);
   font-family: "Bricolage Grotesque", "Noto Sans SC", sans-serif;
-  font-size: 21px;
+  font-size: 18px;
   font-weight: 700;
-  line-height: 1.24;
+  line-height: 1.22;
 }
 
 #cueText.is-hidden {
   display: grid;
-  min-height: 70px;
+  min-height: 0;
+  height: 100%;
   place-items: center;
+  overflow: hidden;
   color: var(--muted);
   font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
   font-size: 14px;
@@ -741,6 +748,16 @@ svg {
   background: rgba(185, 255, 66, 0.78);
   color: var(--ink);
   box-shadow: 0 0 0 3px rgba(185, 255, 66, 0.22);
+}
+
+#cueText::-webkit-scrollbar {
+  width: 8px;
+}
+
+#cueText::-webkit-scrollbar-thumb {
+  border: 2px solid var(--surface-cool);
+  border-radius: 999px;
+  background: rgba(23, 27, 26, 0.28);
 }
 
 .transport {
@@ -1175,7 +1192,7 @@ svg {
   }
 
   #cueText {
-    font-size: 21px;
+    font-size: 18px;
   }
 
   .score-card {
