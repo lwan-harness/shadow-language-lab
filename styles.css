@@ -99,6 +99,8 @@ svg {
 }
 
 .topbar {
+  position: relative;
+  z-index: 80;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -166,6 +168,7 @@ svg {
 }
 
 .top-actions {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -208,6 +211,31 @@ svg {
     var(--surface);
 }
 
+.library-button {
+  min-width: 118px;
+  gap: 8px;
+}
+
+.library-button b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid rgba(23, 27, 26, 0.18);
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--ink);
+  font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+  font-size: 12px;
+}
+
+.library-button.active {
+  background: var(--surface-deep);
+  color: var(--accent);
+}
+
 .import-button input {
   position: absolute;
   inline-size: 1px;
@@ -223,6 +251,105 @@ svg {
 
 .icon-button.danger {
   color: var(--danger);
+}
+
+.library-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 40;
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(520px, calc(100vh - 150px));
+  padding: 12px;
+  overflow: hidden;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 253, 246, 0.98);
+  box-shadow: 10px 10px 0 rgba(23, 27, 26, 0.12);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-6px);
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+.library-panel.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.library-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 4px 10px;
+}
+
+.library-head h2 {
+  margin: 0;
+  font-family: "Bricolage Grotesque", "Noto Sans SC", sans-serif;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.library-head span {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.library-panel ul {
+  display: grid;
+  gap: 8px;
+  max-height: min(440px, calc(100vh - 220px));
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.library-item {
+  display: grid;
+  width: 100%;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1.5px solid rgba(23, 27, 26, 0.18);
+  border-radius: var(--radius);
+  background: var(--surface-cool);
+  color: var(--ink);
+  text-align: left;
+}
+
+.library-item:hover,
+.library-item.active {
+  border-color: var(--line);
+  background:
+    linear-gradient(90deg, rgba(185, 255, 66, 0.34), rgba(20, 184, 200, 0.08)),
+    var(--surface-cool);
+}
+
+.library-item span {
+  overflow: hidden;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-item small,
+.library-empty {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.library-empty {
+  padding: 16px 8px;
 }
 
 .import-button:hover,
@@ -1102,7 +1229,13 @@ svg {
   .top-actions {
     display: grid;
     width: 100%;
-    grid-template-columns: 1fr 44px 44px;
+    grid-template-columns: 1fr 1fr 44px 44px;
+  }
+
+  .library-panel {
+    right: 0;
+    left: 0;
+    width: 100%;
   }
 
   .metrics,

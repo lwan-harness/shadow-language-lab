@@ -3,11 +3,15 @@
 
   const STORAGE_PREFIX = "shadow-lab:";
   const LAST_SESSION_KEY = `${STORAGE_PREFIX}last-session`;
+  const MATERIAL_INDEX_KEY = `${STORAGE_PREFIX}materials`;
+  const ACTIVE_MATERIAL_KEY = `${STORAGE_PREFIX}active-material`;
   const MEDIA_DB_NAME = "shadow-lab-media";
   const MEDIA_DB_VERSION = 2;
   const MEDIA_STORE_NAME = "files";
   const RECORDING_STORE_NAME = "recordings";
   const LAST_MEDIA_KEY = "last-media";
+  const MATERIAL_RECORD_PREFIX = "material:";
+  const MAX_MATERIALS = 24;
   const DONE_SCORE = 82;
   const PASSAGE_LIMITS = {
     minWords: 24,
@@ -24,6 +28,7 @@
 
   const state = {
     fileId: "empty",
+    materialId: "",
     fileName: "",
     subtitleText: "",
     rawEntries: [],
@@ -33,6 +38,7 @@
     filter: "all",
     search: "",
     progress: { attempts: {}, history: [] },
+    materials: [],
     mediaUrl: "",
     mediaName: "",
     hasMedia: false,
@@ -63,17 +69,24 @@
     bindElements();
     bindEvents();
     initSpeechRecognition();
+    loadMaterialIndex();
     restoreLastSession();
     loadProgress();
     renderAll();
+    renderLibrary();
     if (state.restoredSession) toast("已恢复字幕");
-    restoreCachedMedia();
+    restoreInitialMaterial();
   }
 
   function bindElements() {
     [
       "assetInput",
       "fileStatus",
+      "libraryButton",
+      "libraryCount",
+      "libraryPanel",
+      "libraryHint",
+      "libraryList",
       "exportButton",
       "resetButton",
       "metricCompleted",
@@ -116,6 +129,15 @@
 
   function bindEvents() {
     els.assetInput.addEventListener("change", handleAssetFiles);
+    els.libraryButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleLibrary();
+    });
+    els.libraryPanel.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const button = event.target.closest("button[data-material-id]");
+      if (button) loadMaterial(button.dataset.materialId);
+    });
     els.searchInput.addEventListener("input", () => {
       state.search = els.searchInput.value.trim().toLowerCase();
       renderSegments();
@@ -149,8 +171,12 @@
       event.stopPropagation();
     });
     document.addEventListener("click", closeSettings);
+    document.addEventListener("click", closeLibrary);
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") closeSettings();
+      if (event.key === "Escape") {
+        closeSettings();
+        closeLibrary();
+      }
     });
     els.recordButton.addEventListener("click", () => {
       if (state.isRecording) stopRecording();
@@ -187,15 +213,20 @@
     const mediaFile = files.find(isMediaFile);
     let loadedSubtitle = false;
     let loadedMedia = false;
+    const reuseCurrentMaterial = Boolean(subtitleFile && !mediaFile && state.hasMedia && !state.segments.length && state.materialId);
 
     if (subtitleFile) {
-      loadedSubtitle = await loadSubtitleFile(subtitleFile, { silent: true });
+      loadedSubtitle = await loadSubtitleFile(subtitleFile, { silent: true, reuseCurrentMaterial });
+      if (loadedSubtitle && !mediaFile && !reuseCurrentMaterial) clearMedia();
     }
 
     if (mediaFile) {
       loadMediaFile(mediaFile);
-      cacheMediaFile(mediaFile, { silentSuccess: true });
       loadedMedia = true;
+    }
+
+    if (loadedSubtitle || loadedMedia) {
+      await saveCurrentMaterial({ mediaFile });
     }
 
     if (loadedSubtitle && loadedMedia) {
@@ -220,6 +251,7 @@
     }
     state.fileName = file.name;
     state.fileId = makeFileId(file.name, text);
+    if (!options.reuseCurrentMaterial) state.materialId = makeMaterialId(state.fileId);
     state.subtitleText = text;
     state.rawEntries = entries;
     state.segments = segmentEntries(entries);
@@ -249,6 +281,16 @@
     els.mediaPlayer.src = state.mediaUrl;
     els.mediaPlayer.playbackRate = Number(els.speedInput.value);
     document.querySelector(".media-frame").classList.add("has-media");
+  }
+
+  function clearMedia() {
+    if (state.mediaUrl) URL.revokeObjectURL(state.mediaUrl);
+    state.mediaUrl = "";
+    state.mediaName = "";
+    state.hasMedia = false;
+    els.mediaPlayer.removeAttribute("src");
+    els.mediaPlayer.load();
+    document.querySelector(".media-frame").classList.remove("has-media");
   }
 
   function isSubtitleFile(file) {
@@ -611,14 +653,56 @@
     renderCue();
     renderScore();
     renderAttempts();
+    renderLibrary();
   }
 
   function renderStatus() {
     const segmentCount = state.segments.length;
-    els.fileStatus.textContent = segmentCount
-      ? `${state.fileName} · ${segmentCount} 段练习`
-      : "未加载字幕";
+    if (segmentCount) {
+      els.fileStatus.textContent = `${state.fileName} · ${segmentCount} 段练习`;
+    } else if (state.mediaName) {
+      els.fileStatus.textContent = `${state.mediaName} · 等待字幕`;
+    } else {
+      els.fileStatus.textContent = "未加载字幕";
+    }
     els.recognitionStatus.textContent = state.recognitionAvailable ? "语音: 开" : "语音: 关";
+  }
+
+  function renderLibrary() {
+    if (!els.libraryList) return;
+    els.libraryCount.textContent = String(state.materials.length);
+    els.libraryList.innerHTML = "";
+    els.libraryHint.textContent = state.materials.length ? "点击即可切换" : "导入后会保留在这里";
+    if (!state.materials.length) {
+      const empty = document.createElement("li");
+      empty.className = "library-empty";
+      empty.textContent = "还没有素材记录。";
+      els.libraryList.appendChild(empty);
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    state.materials.forEach((material) => {
+      const li = document.createElement("li");
+      const button = document.createElement("button");
+      const isActive = material.id === state.materialId;
+      const title = material.subtitleName || material.mediaName || "未命名素材";
+      const detail = [
+        material.segmentCount ? `${material.segmentCount} 段` : "待配字幕",
+        material.mediaName ? "有媒体" : "无媒体",
+        formatLibraryTime(material.updatedAt || material.savedAt),
+      ].filter(Boolean).join(" · ");
+      button.type = "button";
+      button.dataset.materialId = material.id;
+      button.className = `library-item${isActive ? " active" : ""}`;
+      button.innerHTML = `
+        <span>${escapeHtml(title)}</span>
+        <small>${escapeHtml(detail)}</small>
+      `;
+      li.appendChild(button);
+      fragment.appendChild(li);
+    });
+    els.libraryList.appendChild(fragment);
   }
 
   function renderMetrics() {
@@ -926,6 +1010,20 @@
     els.settingsPanel.classList.remove("open");
     els.settingsButton.classList.remove("active");
     els.settingsButton.setAttribute("aria-expanded", "false");
+  }
+
+  function toggleLibrary() {
+    const isOpen = els.libraryPanel.classList.toggle("open");
+    els.libraryButton.classList.toggle("active", isOpen);
+    els.libraryButton.setAttribute("aria-expanded", String(isOpen));
+    if (isOpen) closeSettings();
+  }
+
+  function closeLibrary() {
+    if (!els.libraryPanel || !els.libraryButton) return;
+    els.libraryPanel.classList.remove("open");
+    els.libraryButton.classList.remove("active");
+    els.libraryButton.setAttribute("aria-expanded", "false");
   }
 
   async function startLoop() {
@@ -1294,6 +1392,161 @@
     };
   }
 
+  function loadMaterialIndex() {
+    try {
+      const raw = localStorage.getItem(MATERIAL_INDEX_KEY);
+      const saved = raw ? JSON.parse(raw) : [];
+      state.materials = Array.isArray(saved)
+        ? saved.filter((item) => item && item.id).slice(0, MAX_MATERIALS)
+        : [];
+    } catch (error) {
+      state.materials = [];
+    }
+  }
+
+  function persistMaterialIndex() {
+    localStorage.setItem(MATERIAL_INDEX_KEY, JSON.stringify(state.materials.slice(0, MAX_MATERIALS)));
+  }
+
+  function persistActiveMaterial() {
+    if (state.materialId) localStorage.setItem(ACTIVE_MATERIAL_KEY, state.materialId);
+  }
+
+  function materialRecordKey(id) {
+    return `${MATERIAL_RECORD_PREFIX}${id}`;
+  }
+
+  function upsertMaterialIndex(meta) {
+    const existing = state.materials.find((item) => item.id === meta.id) || {};
+    const next = {
+      ...existing,
+      ...meta,
+      savedAt: existing.savedAt || meta.savedAt || Date.now(),
+      updatedAt: meta.updatedAt || Date.now(),
+    };
+    state.materials = [
+      next,
+      ...state.materials.filter((item) => item.id !== meta.id),
+    ].slice(0, MAX_MATERIALS);
+    persistMaterialIndex();
+    renderLibrary();
+  }
+
+  function updateActiveMaterialMeta(patch = {}) {
+    if (!state.materialId) return;
+    const index = state.materials.findIndex((item) => item.id === state.materialId);
+    if (index < 0) return;
+    state.materials[index] = {
+      ...state.materials[index],
+      selectedIndex: state.selectedIndex,
+      practiceMode: state.practiceMode,
+      ...patch,
+      updatedAt: Date.now(),
+    };
+    persistMaterialIndex();
+  }
+
+  async function saveCurrentMaterial(options = {}) {
+    if (!state.subtitleText && !options.mediaFile && !state.mediaName) return;
+    if (!state.materialId) {
+      state.materialId = state.fileId !== "empty"
+        ? makeMaterialId(state.fileId)
+        : makeMediaMaterialId(options.mediaFile);
+    }
+
+    try {
+      const existing = await mediaDbRequest("readonly", (store) => store.get(materialRecordKey(state.materialId))).catch(() => null);
+      const mediaFile = options.mediaFile || null;
+      const now = Date.now();
+      const record = {
+        ...(existing || {}),
+        id: state.materialId,
+        fileId: state.fileId,
+        subtitleName: state.fileName,
+        subtitleText: state.subtitleText,
+        segmentCount: state.segments.length,
+        selectedIndex: state.selectedIndex,
+        practiceMode: state.practiceMode,
+        mediaName: mediaFile ? mediaFile.name : state.mediaName || existing?.mediaName || "",
+        mediaType: mediaFile ? mediaFile.type : existing?.mediaType || "",
+        mediaSize: mediaFile ? mediaFile.size : existing?.mediaSize || 0,
+        mediaLastModified: mediaFile ? mediaFile.lastModified : existing?.mediaLastModified || 0,
+        savedAt: existing?.savedAt || now,
+        updatedAt: now,
+      };
+      if (mediaFile) record.blob = mediaFile;
+      await mediaDbRequest("readwrite", (store) => store.put(record, materialRecordKey(record.id)));
+      upsertMaterialIndex({
+        id: record.id,
+        fileId: record.fileId,
+        subtitleName: record.subtitleName,
+        mediaName: record.mediaName,
+        segmentCount: record.segmentCount,
+        selectedIndex: record.selectedIndex,
+        practiceMode: record.practiceMode,
+        savedAt: record.savedAt,
+        updatedAt: record.updatedAt,
+      });
+      persistActiveMaterial();
+      persistLastSession();
+    } catch (error) {
+      toast(isQuotaError(error) ? "素材太大，无法保存记录" : "素材记录保存失败");
+    }
+  }
+
+  async function loadMaterial(id, options = {}) {
+    if (!id) return;
+    try {
+      const record = await mediaDbRequest("readonly", (store) => store.get(materialRecordKey(id)));
+      const meta = state.materials.find((item) => item.id === id) || {};
+      if (!record) {
+        toast("没有找到这条素材记录");
+        return;
+      }
+      applyMaterialRecord(record, meta);
+      if (!options.silent) toast(`已切换到 ${record.subtitleName || record.mediaName || "素材记录"}`);
+    } catch (error) {
+      toast("素材记录读取失败");
+    }
+  }
+
+  function applyMaterialRecord(record, meta = {}) {
+    stopLoop({ silent: true });
+    stopAttemptPlayback({ silent: true });
+    state.materialId = record.id || meta.id || "";
+    state.fileName = record.subtitleName || "";
+    state.fileId = record.fileId || "empty";
+    state.subtitleText = record.subtitleText || "";
+    state.rawEntries = [];
+    state.segments = [];
+    if (state.subtitleText) {
+      state.rawEntries = parseSrt(state.subtitleText);
+      state.segments = segmentEntries(state.rawEntries);
+    }
+    state.selectedIndex = clamp(Number(meta.selectedIndex ?? record.selectedIndex) || 0, 0, Math.max(0, state.segments.length - 1));
+    state.practiceMode = ["listen", "study", "recite"].includes(meta.practiceMode || record.practiceMode)
+      ? meta.practiceMode || record.practiceMode
+      : "listen";
+    state.search = "";
+    els.searchInput.value = "";
+    loadProgress();
+    if (record.blob) {
+      loadMediaBlob(record.blob, {
+        name: record.mediaName,
+        type: record.mediaType,
+        size: record.mediaSize,
+        lastModified: record.mediaLastModified,
+      });
+    } else {
+      clearMedia();
+    }
+    persistActiveMaterial();
+    persistLastSession();
+    updateActiveMaterialMeta();
+    closeLibrary();
+    renderAll();
+  }
+
   function loadProgress() {
     try {
       const raw = localStorage.getItem(STORAGE_PREFIX + state.fileId);
@@ -1321,6 +1574,7 @@
 
       state.fileName = saved.name;
       state.fileId = saved.fileId;
+      state.materialId = saved.materialId || "";
       state.subtitleText = saved.text;
       state.rawEntries = entries;
       state.segments = segmentEntries(entries);
@@ -1333,12 +1587,18 @@
   }
 
   function persistLastSession() {
-    if (!state.subtitleText || !state.segments.length) return;
+    persistActiveMaterial();
+    updateActiveMaterialMeta();
+    if (!state.subtitleText || !state.segments.length) {
+      localStorage.removeItem(LAST_SESSION_KEY);
+      return;
+    }
     try {
       localStorage.setItem(
         LAST_SESSION_KEY,
         JSON.stringify({
           version: 1,
+          materialId: state.materialId,
           name: state.fileName,
           fileId: state.fileId,
           text: state.subtitleText,
@@ -1352,8 +1612,36 @@
     }
   }
 
+  async function restoreInitialMaterial() {
+    if (state.segments.length) {
+      await restoreCachedMedia();
+      return;
+    }
+
+    const activeId = localStorage.getItem(ACTIVE_MATERIAL_KEY) || state.materials[0]?.id;
+    if (activeId) {
+      await loadMaterial(activeId, { silent: true });
+      return;
+    }
+
+    await restoreCachedMedia();
+  }
+
   async function restoreCachedMedia() {
     try {
+      if (state.materialId) {
+        const material = await mediaDbRequest("readonly", (store) => store.get(materialRecordKey(state.materialId)));
+        if (material && material.blob) {
+          loadMediaBlob(material.blob, {
+            name: material.mediaName,
+            type: material.mediaType,
+            size: material.mediaSize,
+            lastModified: material.mediaLastModified,
+          });
+          return;
+        }
+        return;
+      }
       const record = await mediaDbRequest("readonly", (store) => store.get(LAST_MEDIA_KEY));
       if (!record || !record.blob) return;
       loadMediaBlob(record.blob, record);
@@ -1499,6 +1787,26 @@
       hash = Math.imul(hash, 16777619);
     }
     return `${name.replace(/[^\w.-]+/g, "_")}:${(hash >>> 0).toString(16)}`;
+  }
+
+  function makeMaterialId(seed) {
+    return `mat:${String(seed || Date.now()).replace(/[^\w.-]+/g, "_")}`;
+  }
+
+  function makeMediaMaterialId(file) {
+    if (!file) return makeMaterialId(`media:${Date.now()}`);
+    return makeMaterialId(`media:${file.name}:${file.size}:${file.lastModified}`);
+  }
+
+  function formatLibraryTime(value) {
+    const time = Number(value);
+    if (!time) return "";
+    const date = new Date(time);
+    const today = new Date();
+    const sameDay = date.toDateString() === today.toDateString();
+    return sameDay
+      ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : date.toLocaleDateString();
   }
 
   function guessSpeechLang(text) {

@@ -14,6 +14,9 @@
       <symbol id="icon-upload" viewBox="0 0 24 24">
         <path d="M12 3v12m0-12 4.5 4.5M12 3 7.5 7.5M4 15v3a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-3" />
       </symbol>
+      <symbol id="icon-library" viewBox="0 0 24 24">
+        <path d="M5 4h14v4H5zM5 10h14v10H5zM8 14h8M8 17h5" />
+      </symbol>
       <symbol id="icon-play" viewBox="0 0 24 24">
         <path d="M8 5v14l11-7Z" />
       </symbol>
@@ -63,6 +66,18 @@
             <span>导入素材</span>
             <input id="assetInput" type="file" accept=".srt,.vtt,text/plain,audio/*,video/*" multiple />
           </label>
+          <button id="libraryButton" class="import-button library-button" type="button" title="素材记录" aria-expanded="false" aria-controls="libraryPanel">
+            <svg><use href="#icon-library"></use></svg>
+            <span>素材记录</span>
+            <b id="libraryCount">0</b>
+          </button>
+          <section id="libraryPanel" class="library-panel" aria-label="素材记录">
+            <div class="library-head">
+              <h2>素材记录</h2>
+              <span id="libraryHint">导入后会保留在这里</span>
+            </div>
+            <ul id="libraryList"></ul>
+          </section>
           <button id="exportButton" class="icon-button" type="button" title="导出进度">
             <svg><use href="#icon-save"></use></svg>
           </button>
