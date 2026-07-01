@@ -4,7 +4,9 @@
   const STORAGE_PREFIX = "shadow-lab:";
   const LAST_SESSION_KEY = `${STORAGE_PREFIX}last-session`;
   const MEDIA_DB_NAME = "shadow-lab-media";
+  const MEDIA_DB_VERSION = 2;
   const MEDIA_STORE_NAME = "files";
+  const RECORDING_STORE_NAME = "recordings";
   const LAST_MEDIA_KEY = "last-media";
   const DONE_SCORE = 82;
   const PASSAGE_LIMITS = {
@@ -27,6 +29,7 @@
     rawEntries: [],
     segments: [],
     selectedIndex: 0,
+    practiceMode: "listen",
     filter: "all",
     search: "",
     progress: { attempts: {}, history: [] },
@@ -47,6 +50,9 @@
     recordStartAt: 0,
     activeStream: null,
     internalPause: false,
+    playingAttemptId: "",
+    recordingPlayer: null,
+    recordingUrl: "",
   };
 
   const els = {};
@@ -79,6 +85,7 @@
       "cueIndex",
       "cueTime",
       "cueState",
+      "modeButtons",
       "cueText",
       "prevButton",
       "playButton",
@@ -117,6 +124,11 @@
         document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab === button));
         renderSegments();
       });
+    });
+    els.modeButtons.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-mode]");
+      if (!button) return;
+      setPracticeMode(button.dataset.mode);
     });
     els.prevButton.addEventListener("click", () => selectSegment(state.selectedIndex - 1));
     els.nextButton.addEventListener("click", () => selectSegment(state.selectedIndex + 1));
@@ -163,6 +175,8 @@
     });
     els.exportButton.addEventListener("click", exportProgress);
     els.resetButton.addEventListener("click", resetProgress);
+    els.mediaPlayer.addEventListener("timeupdate", handleMediaTimeUpdate);
+    els.mediaPlayer.addEventListener("seeking", handleMediaTimeUpdate);
     els.mediaPlayer.addEventListener("pause", () => {
       if (state.hasMedia && !state.mediaStopTimer && !state.internalPause) setPlaying(false);
     });
@@ -213,6 +227,7 @@
     state.rawEntries = entries;
     state.segments = segmentEntries(entries);
     state.selectedIndex = 0;
+    state.practiceMode = "listen";
     loadProgress();
     persistLastSession();
     renderAll();
@@ -533,8 +548,41 @@
       start,
       end,
       text: cleanDisplayText(bucket.map((item) => item.text).join(" ")),
+      tokens: timedDisplayTokensForBucket(bucket),
       entryCount: bucket.length,
     };
+  }
+
+  function timedDisplayTokensForBucket(bucket) {
+    const tokens = [];
+    bucket.forEach((unit, unitIndex) => {
+      if (unitIndex > 0 && tokens.length && tokens[tokens.length - 1].type !== "space") {
+        tokens.push({ type: "space", text: " ", start: null, end: null });
+      }
+      tokens.push(...timedDisplayTokensForText(unit.text, unit.start, unit.end));
+    });
+    return tokens.map((token, index) => ({ ...token, index }));
+  }
+
+  function timedDisplayTokensForText(text, start, end) {
+    const parts = String(text).match(/\s+|\S+/g) || [];
+    const wordParts = parts.filter((part) => !/^\s+$/.test(part));
+    const duration = Math.max(0.2, end - start);
+    let wordIndex = 0;
+    return parts.map((part) => {
+      if (/^\s+$/.test(part)) {
+        return { type: "space", text: part, start: null, end: null };
+      }
+      const tokenStart = start + (duration * wordIndex) / Math.max(1, wordParts.length);
+      const tokenEnd = start + (duration * (wordIndex + 1)) / Math.max(1, wordParts.length);
+      wordIndex += 1;
+      return {
+        type: "word",
+        text: part,
+        start: tokenStart,
+        end: Math.max(tokenEnd, tokenStart + 0.02),
+      };
+    });
   }
 
   function cleanDisplayText(text) {
@@ -607,17 +655,56 @@
 
   function renderCue() {
     const segment = currentSegment();
+    renderModeButtons();
     if (!segment) {
       els.cueIndex.textContent = "--";
       els.cueTime.textContent = "00:00.000 - 00:00.000";
       els.cueState.textContent = state.isPlaying ? "播放中" : "待机";
-      els.cueText.textContent = "导入字幕开始练习。";
+      renderCuePlaceholder("导入字幕开始练习。");
       return;
     }
     els.cueIndex.textContent = `${segment.index + 1}/${state.segments.length}`;
     els.cueTime.textContent = `${formatTime(segment.start)} - ${formatTime(segment.end)}`;
     els.cueState.textContent = state.isRecording ? "录音中" : state.isPlaying ? "循环中" : "就绪";
-    els.cueText.textContent = segment.text;
+    if (state.practiceMode === "study") {
+      renderCueWords(segment);
+      updateWordHighlight(currentPlaybackTime(), { force: true });
+    } else {
+      renderCuePlaceholder(state.practiceMode === "recite" ? "复述评分" : "盲听中");
+    }
+  }
+
+  function renderModeButtons() {
+    if (!els.modeButtons) return;
+    els.modeButtons.querySelectorAll("button[data-mode]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.mode === state.practiceMode);
+    });
+  }
+
+  function renderCuePlaceholder(text) {
+    els.cueText.className = "is-hidden";
+    els.cueText.textContent = text;
+  }
+
+  function renderCueWords(segment) {
+    els.cueText.className = "";
+    els.cueText.innerHTML = "";
+    const fragment = document.createDocumentFragment();
+    const tokens = segment.tokens && segment.tokens.length
+      ? segment.tokens
+      : timedDisplayTokensForText(segment.text, segment.start, segment.end).map((token, index) => ({ ...token, index }));
+    for (const token of tokens) {
+      if (token.type === "space") {
+        fragment.appendChild(document.createTextNode(token.text));
+        continue;
+      }
+      const span = document.createElement("span");
+      span.className = "cue-word";
+      span.dataset.tokenIndex = String(token.index);
+      span.textContent = token.text;
+      fragment.appendChild(span);
+    }
+    els.cueText.appendChild(fragment);
   }
 
   function renderScore() {
@@ -643,7 +730,7 @@
     const items = state.progress.history.slice(0, 8);
     if (!items.length) {
       const li = document.createElement("li");
-      li.innerHTML = "<b>--</b><p><span>暂无练习记录</span>练一次后这里会显示历史。</p>";
+      li.innerHTML = "<b>--</b><p><span>暂无练习记录</span>练一次后这里会显示历史。</p><button class=\"attempt-play\" type=\"button\" disabled aria-hidden=\"true\"></button>";
       els.attemptList.appendChild(li);
       return;
     }
@@ -651,13 +738,70 @@
     for (const attempt of items) {
       const segment = state.segments.find((item) => item.id === attempt.segmentId);
       const li = document.createElement("li");
+      const score = attempt.score ? Math.round(attempt.score) : attempt.manual ? attempt.manual : "--";
+      const isPlaying = state.playingAttemptId === attempt.id;
       li.innerHTML = `
-        <b>${attempt.score ? Math.round(attempt.score) : attempt.manual ? attempt.manual : "--"}</b>
+        <b>${score}</b>
         <p><span>${segment ? escapeHtml(segment.text) : "之前的练习段"}</span>${new Date(attempt.at).toLocaleString()}</p>
+        <button class="attempt-play${isPlaying ? " active" : ""}" type="button" title="复听录音" ${attempt.audioId ? "" : "disabled aria-hidden=\"true\""}>
+          <svg><use href="#${isPlaying ? "icon-pause" : "icon-play"}"></use></svg>
+        </button>
       `;
+      const button = li.querySelector(".attempt-play");
+      if (button && attempt.audioId) {
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          playAttemptRecording(attempt);
+        });
+      }
       fragment.appendChild(li);
     }
     els.attemptList.appendChild(fragment);
+  }
+
+  async function playAttemptRecording(attempt) {
+    if (!attempt || !attempt.audioId) return;
+    if (state.playingAttemptId === attempt.id) {
+      stopAttemptPlayback();
+      return;
+    }
+    stopAttemptPlayback({ silent: true });
+    try {
+      const record = await recordingDbRequest("readonly", (store) => store.get(attempt.audioId));
+      if (!record || !record.blob) {
+        toast("找不到录音");
+        return;
+      }
+      const url = URL.createObjectURL(record.blob);
+      const audio = new Audio(url);
+      state.recordingPlayer = audio;
+      state.recordingUrl = url;
+      state.playingAttemptId = attempt.id;
+      audio.onended = () => stopAttemptPlayback();
+      audio.onerror = () => {
+        toast("录音播放失败");
+        stopAttemptPlayback();
+      };
+      renderAttempts();
+      await audio.play();
+    } catch (error) {
+      stopAttemptPlayback();
+      toast("录音播放失败");
+    }
+  }
+
+  function stopAttemptPlayback(options = {}) {
+    if (state.recordingPlayer) {
+      state.recordingPlayer.pause();
+      state.recordingPlayer = null;
+    }
+    if (state.recordingUrl) {
+      URL.revokeObjectURL(state.recordingUrl);
+      state.recordingUrl = "";
+    }
+    const wasPlaying = Boolean(state.playingAttemptId);
+    state.playingAttemptId = "";
+    if (wasPlaying && !options.silent) renderAttempts();
   }
 
   function selectSegment(index) {
@@ -665,7 +809,7 @@
     state.selectedIndex = clamp(index, 0, state.segments.length - 1);
     persistLastSession();
     closeSettings();
-    stopLoop();
+    stopLoop({ silent: true });
     renderSegments();
     renderCue();
     renderScore();
@@ -673,6 +817,57 @@
 
   function currentSegment() {
     return state.segments[state.selectedIndex] || null;
+  }
+
+  function setPracticeMode(mode) {
+    if (!["listen", "study", "recite"].includes(mode)) return;
+    state.practiceMode = mode;
+    persistLastSession();
+    renderCue();
+  }
+
+  function currentPlaybackTime() {
+    return state.hasMedia && Number.isFinite(els.mediaPlayer.currentTime)
+      ? els.mediaPlayer.currentTime
+      : null;
+  }
+
+  function handleMediaTimeUpdate() {
+    if (!state.hasMedia) return;
+    const time = els.mediaPlayer.currentTime;
+    syncSegmentToMediaTime(time);
+    updateWordHighlight(time);
+  }
+
+  function syncSegmentToMediaTime(time) {
+    if (!state.segments.length || !Number.isFinite(time)) return;
+    const current = currentSegment();
+    if (current && time >= current.start && time <= current.end) return;
+    const nextIndex = state.segments.findIndex((segment) => time >= segment.start && time <= segment.end);
+    if (nextIndex < 0 || nextIndex === state.selectedIndex) return;
+    state.selectedIndex = nextIndex;
+    persistLastSession();
+    renderSegments();
+    renderCue();
+    renderScore();
+  }
+
+  function updateWordHighlight(time, options = {}) {
+    if (state.practiceMode !== "study" || !Number.isFinite(time)) return;
+    const segment = currentSegment();
+    if (!segment || !segment.tokens) return;
+    const words = els.cueText.querySelectorAll(".cue-word");
+    if (!words.length) return;
+    words.forEach((word) => {
+      const token = segment.tokens[Number(word.dataset.tokenIndex)];
+      const isActive = token && time >= token.start && time < token.end;
+      const isPast = token && time >= token.end;
+      word.classList.toggle("active", Boolean(isActive));
+      word.classList.toggle("past", Boolean(isPast || isActive));
+      if (options.force && time < segment.start) {
+        word.classList.remove("active", "past");
+      }
+    });
   }
 
   function toggleSettings() {
@@ -729,11 +924,13 @@
       const end = segment.end + padding;
       els.mediaPlayer.playbackRate = Number(els.speedInput.value);
       els.mediaPlayer.currentTime = start;
+      updateWordHighlight(start, { force: true });
       const finish = () => {
         clearTimeout(state.mediaStopTimer);
         state.mediaStopTimer = null;
         state.internalPause = true;
         els.mediaPlayer.pause();
+        updateWordHighlight(end, { force: true });
         setTimeout(() => {
           state.internalPause = false;
         }, 0);
@@ -741,6 +938,7 @@
       };
       const tick = () => {
         if (!state.isPlaying) return finish();
+        updateWordHighlight(els.mediaPlayer.currentTime);
         if (els.mediaPlayer.currentTime >= end) return finish();
         state.mediaStopTimer = setTimeout(tick, 80);
       };
@@ -774,6 +972,8 @@
       return;
     }
     try {
+      stopAttemptPlayback({ silent: true });
+      setPracticeMode("recite");
       state.activeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       state.recordedChunks = [];
       state.recognitionText = "";
@@ -781,7 +981,9 @@
       state.recorder.ondataavailable = (event) => {
         if (event.data && event.data.size) state.recordedChunks.push(event.data);
       };
-      state.recorder.onstop = finalizeRecording;
+      state.recorder.onstop = () => {
+        finalizeRecording();
+      };
       state.recordStartAt = performance.now();
       state.recorder.start();
       startSpeechRecognition(segment.text);
@@ -808,14 +1010,30 @@
     renderCue();
   }
 
-  function finalizeRecording() {
+  async function finalizeRecording() {
     const segment = currentSegment();
     if (!segment) return;
     const duration = Math.max(0.1, (performance.now() - state.recordStartAt) / 1000);
     const recognized = state.recognitionText.trim();
     const auto = recognized ? scoreAttempt(segment.text, recognized, segment.end - segment.start, duration) : null;
+    const attemptId = `attempt-${Date.now()}`;
+    const audioBlob = makeRecordingBlob();
+    let audioId = "";
+    if (audioBlob && audioBlob.size) {
+      audioId = attemptId;
+      try {
+        await cacheRecordingBlob(audioId, audioBlob, {
+          segmentId: segment.id,
+          duration,
+          at: Date.now(),
+        });
+      } catch (error) {
+        audioId = "";
+        toast("录音保存失败");
+      }
+    }
     const attempt = {
-      id: `attempt-${Date.now()}`,
+      id: attemptId,
       segmentId: segment.id,
       at: Date.now(),
       duration,
@@ -824,10 +1042,35 @@
       accuracy: auto ? auto.accuracy : null,
       pace: auto ? auto.pace : null,
       manual: null,
+      audioId,
+      audioType: audioBlob ? audioBlob.type : "",
     };
     saveAttempt(attempt);
     renderAll();
     toast(recognized ? `得分 ${Math.round(auto.score)}` : "已保存，可手动评分");
+  }
+
+  function makeRecordingBlob() {
+    if (!state.recordedChunks.length) return null;
+    const type = state.recordedChunks.find((chunk) => chunk.type)?.type || "audio/webm";
+    return new Blob(state.recordedChunks, { type });
+  }
+
+  function cacheRecordingBlob(id, blob, meta = {}) {
+    if (!blob || !window.indexedDB) return Promise.reject(new Error("Recording storage unavailable"));
+    return recordingDbRequest("readwrite", (store) =>
+      store.put(
+        {
+          id,
+          blob,
+          type: blob.type,
+          segmentId: meta.segmentId || "",
+          duration: meta.duration || 0,
+          at: meta.at || Date.now(),
+        },
+        id
+      )
+    );
   }
 
   function initSpeechRecognition() {
@@ -1023,6 +1266,7 @@
       state.rawEntries = entries;
       state.segments = segmentEntries(entries);
       state.selectedIndex = clamp(Number(saved.selectedIndex) || 0, 0, Math.max(0, state.segments.length - 1));
+      state.practiceMode = ["listen", "study", "recite"].includes(saved.practiceMode) ? saved.practiceMode : "listen";
       state.restoredSession = true;
     } catch (error) {
       localStorage.removeItem(LAST_SESSION_KEY);
@@ -1040,6 +1284,7 @@
           fileId: state.fileId,
           text: state.subtitleText,
           selectedIndex: state.selectedIndex,
+          practiceMode: state.practiceMode,
           savedAt: Date.now(),
         })
       );
@@ -1082,12 +1327,20 @@
   }
 
   function mediaDbRequest(mode, action) {
+    return dbStoreRequest(MEDIA_STORE_NAME, mode, action);
+  }
+
+  function recordingDbRequest(mode, action) {
+    return dbStoreRequest(RECORDING_STORE_NAME, mode, action);
+  }
+
+  function dbStoreRequest(storeName, mode, action) {
     return openMediaDb().then(
       (db) =>
         new Promise((resolve, reject) => {
-          const transaction = db.transaction(MEDIA_STORE_NAME, mode);
+          const transaction = db.transaction(storeName, mode);
           let result;
-          const request = action(transaction.objectStore(MEDIA_STORE_NAME));
+          const request = action(transaction.objectStore(storeName));
           request.onsuccess = () => {
             result = request.result;
           };
@@ -1115,11 +1368,14 @@
         return;
       }
 
-      const request = window.indexedDB.open(MEDIA_DB_NAME, 1);
+      const request = window.indexedDB.open(MEDIA_DB_NAME, MEDIA_DB_VERSION);
       request.onupgradeneeded = () => {
         const db = request.result;
         if (!db.objectStoreNames.contains(MEDIA_STORE_NAME)) {
           db.createObjectStore(MEDIA_STORE_NAME);
+        }
+        if (!db.objectStoreNames.contains(RECORDING_STORE_NAME)) {
+          db.createObjectStore(RECORDING_STORE_NAME);
         }
       };
       request.onsuccess = () => resolve(request.result);
@@ -1151,10 +1407,29 @@
 
   function resetProgress() {
     if (!state.segments.length) return;
+    stopAttemptPlayback({ silent: true });
+    deleteRecordingsForProgress(state.progress);
     localStorage.removeItem(STORAGE_PREFIX + state.fileId);
     state.progress = { attempts: {}, history: [] };
     renderAll();
     toast("进度已重置");
+  }
+
+  function deleteRecordingsForProgress(progress) {
+    const ids = new Set();
+    Object.values(progress.attempts || {}).flat().forEach((attempt) => {
+      if (attempt.audioId) ids.add(attempt.audioId);
+    });
+    if (!ids.size) return;
+    recordingDbRequest("readwrite", (store) => {
+      let request = null;
+      ids.forEach((id) => {
+        request = store.delete(id);
+      });
+      return request || store.get("__noop__");
+    }).catch(() => {
+      // Stale recording blobs are harmless and should not block progress reset.
+    });
   }
 
   function makeFileId(name, text) {
