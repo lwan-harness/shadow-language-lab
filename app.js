@@ -38,6 +38,7 @@
     hasMedia: false,
     isPlaying: false,
     isRecording: false,
+    loopSegmentIndex: null,
     loopEnabled: true,
     loopTimer: null,
     mediaStopTimer: null,
@@ -86,6 +87,7 @@
       "cueTime",
       "cueState",
       "modeButtons",
+      "cueProgressFill",
       "cueText",
       "prevButton",
       "playButton",
@@ -548,41 +550,55 @@
       start,
       end,
       text: cleanDisplayText(bucket.map((item) => item.text).join(" ")),
-      tokens: timedDisplayTokensForBucket(bucket),
+      phrases: timedPhraseGroupsForBucket(bucket),
       entryCount: bucket.length,
     };
   }
 
-  function timedDisplayTokensForBucket(bucket) {
-    const tokens = [];
+  function timedPhraseGroupsForBucket(bucket) {
+    const phrases = [];
     bucket.forEach((unit, unitIndex) => {
-      if (unitIndex > 0 && tokens.length && tokens[tokens.length - 1].type !== "space") {
-        tokens.push({ type: "space", text: " ", start: null, end: null });
-      }
-      tokens.push(...timedDisplayTokensForText(unit.text, unit.start, unit.end));
+      const chunks = splitPhraseText(unit.text);
+      const totalWeight = chunks.reduce((total, text) => total + phraseWeight(text), 0) || chunks.length || 1;
+      let elapsedWeight = 0;
+      chunks.forEach((text) => {
+        const weight = phraseWeight(text);
+        const start = unit.start + ((unit.end - unit.start) * elapsedWeight) / totalWeight;
+        elapsedWeight += weight;
+        const end = unit.start + ((unit.end - unit.start) * elapsedWeight) / totalWeight;
+        phrases.push({
+          text,
+          start,
+          end: Math.max(end, start + 0.12),
+          boundary: unitIndex > 0 && elapsedWeight === weight,
+        });
+      });
     });
-    return tokens.map((token, index) => ({ ...token, index }));
+    return phrases.map((phrase, index) => ({ ...phrase, index }));
   }
 
-  function timedDisplayTokensForText(text, start, end) {
-    const parts = String(text).match(/\s+|\S+/g) || [];
-    const wordParts = parts.filter((part) => !/^\s+$/.test(part));
-    const duration = Math.max(0.2, end - start);
-    let wordIndex = 0;
-    return parts.map((part) => {
-      if (/^\s+$/.test(part)) {
-        return { type: "space", text: part, start: null, end: null };
+  function splitPhraseText(text) {
+    const clauses = String(text)
+      .split(/(?<=[.;:!?。！？；：])\s+/)
+      .map((part) => cleanDisplayText(part))
+      .filter(Boolean);
+    const source = clauses.length ? clauses : [cleanDisplayText(text)];
+    const chunks = [];
+    source.forEach((clause) => {
+      const words = clause.match(/\S+/g) || [];
+      if (words.length <= 9) {
+        chunks.push(clause);
+        return;
       }
-      const tokenStart = start + (duration * wordIndex) / Math.max(1, wordParts.length);
-      const tokenEnd = start + (duration * (wordIndex + 1)) / Math.max(1, wordParts.length);
-      wordIndex += 1;
-      return {
-        type: "word",
-        text: part,
-        start: tokenStart,
-        end: Math.max(tokenEnd, tokenStart + 0.02),
-      };
+      for (let index = 0; index < words.length; index += 7) {
+        chunks.push(words.slice(index, index + 7).join(" "));
+      }
     });
+    return chunks.length ? chunks : [cleanDisplayText(text)];
+  }
+
+  function phraseWeight(text) {
+    return Math.max(1, tokenizeWords(text).length);
   }
 
   function cleanDisplayText(text) {
@@ -660,6 +676,7 @@
       els.cueIndex.textContent = "--";
       els.cueTime.textContent = "00:00.000 - 00:00.000";
       els.cueState.textContent = state.isPlaying ? "播放中" : "待机";
+      updateCueProgress(null, null);
       renderCuePlaceholder("导入字幕开始练习。");
       return;
     }
@@ -667,10 +684,11 @@
     els.cueTime.textContent = `${formatTime(segment.start)} - ${formatTime(segment.end)}`;
     els.cueState.textContent = state.isRecording ? "录音中" : state.isPlaying ? "循环中" : "就绪";
     if (state.practiceMode === "study") {
-      renderCueWords(segment);
-      updateWordHighlight(currentPlaybackTime(), { force: true });
+      renderCuePhrases(segment);
+      updateStudyProgress(currentPlaybackTime(), { force: true });
     } else {
       renderCuePlaceholder(state.practiceMode === "recite" ? "复述评分" : "盲听中");
+      updateCueProgress(currentPlaybackTime(), segment);
     }
   }
 
@@ -686,24 +704,21 @@
     els.cueText.textContent = text;
   }
 
-  function renderCueWords(segment) {
+  function renderCuePhrases(segment) {
     els.cueText.className = "";
     els.cueText.innerHTML = "";
     const fragment = document.createDocumentFragment();
-    const tokens = segment.tokens && segment.tokens.length
-      ? segment.tokens
-      : timedDisplayTokensForText(segment.text, segment.start, segment.end).map((token, index) => ({ ...token, index }));
-    for (const token of tokens) {
-      if (token.type === "space") {
-        fragment.appendChild(document.createTextNode(token.text));
-        continue;
-      }
+    const phrases = segment.phrases && segment.phrases.length
+      ? segment.phrases
+      : timedPhraseGroupsForBucket([{ text: segment.text, start: segment.start, end: segment.end }]);
+    phrases.forEach((phrase, index) => {
+      if (index > 0) fragment.appendChild(document.createTextNode(" "));
       const span = document.createElement("span");
-      span.className = "cue-word";
-      span.dataset.tokenIndex = String(token.index);
-      span.textContent = token.text;
+      span.className = "cue-phrase";
+      span.dataset.phraseIndex = String(phrase.index);
+      span.textContent = phrase.text;
       fragment.appendChild(span);
-    }
+    });
     els.cueText.appendChild(fragment);
   }
 
@@ -835,8 +850,8 @@
   function handleMediaTimeUpdate() {
     if (!state.hasMedia) return;
     const time = els.mediaPlayer.currentTime;
-    syncSegmentToMediaTime(time);
-    updateWordHighlight(time);
+    if (state.loopSegmentIndex === null) syncSegmentToMediaTime(time);
+    updateStudyProgress(time);
   }
 
   function syncSegmentToMediaTime(time) {
@@ -852,22 +867,35 @@
     renderScore();
   }
 
-  function updateWordHighlight(time, options = {}) {
+  function updateStudyProgress(time, options = {}) {
+    const segment = state.loopSegmentIndex === null
+      ? currentSegment()
+      : state.segments[state.loopSegmentIndex];
+    updateCueProgress(time, segment);
     if (state.practiceMode !== "study" || !Number.isFinite(time)) return;
-    const segment = currentSegment();
-    if (!segment || !segment.tokens) return;
-    const words = els.cueText.querySelectorAll(".cue-word");
-    if (!words.length) return;
-    words.forEach((word) => {
-      const token = segment.tokens[Number(word.dataset.tokenIndex)];
-      const isActive = token && time >= token.start && time < token.end;
-      const isPast = token && time >= token.end;
-      word.classList.toggle("active", Boolean(isActive));
-      word.classList.toggle("past", Boolean(isPast || isActive));
-      if (options.force && time < segment.start) {
-        word.classList.remove("active", "past");
+    if (!segment || !segment.phrases) return;
+    const phrases = els.cueText.querySelectorAll(".cue-phrase");
+    if (!phrases.length) return;
+    phrases.forEach((phrase) => {
+      const item = segment.phrases[Number(phrase.dataset.phraseIndex)];
+      const isActive = item && time >= item.start && time < item.end;
+      const isPast = item && time >= item.end;
+      phrase.classList.toggle("active", Boolean(isActive));
+      phrase.classList.toggle("past", Boolean(isPast || isActive));
+      if (options.force && item && time < item.start) {
+        phrase.classList.remove("active", "past");
       }
     });
+  }
+
+  function updateCueProgress(time, segment) {
+    if (!els.cueProgressFill) return;
+    if (!segment || !Number.isFinite(time)) {
+      els.cueProgressFill.style.width = "0%";
+      return;
+    }
+    const progress = clamp((time - segment.start) / Math.max(0.1, segment.end - segment.start), 0, 1);
+    els.cueProgressFill.style.width = `${Math.round(progress * 100)}%`;
   }
 
   function toggleSettings() {
@@ -890,6 +918,7 @@
       return;
     }
     stopLoop({ silent: true });
+    state.loopSegmentIndex = segment.index;
     setPlaying(true);
     const repeats = state.loopEnabled ? Number(els.repeatInput.value) || 3 : 1;
     for (let i = 0; i < repeats && state.isPlaying; i += 1) {
@@ -897,6 +926,7 @@
       else await speakSegment(segment);
       if (state.loopEnabled && i < repeats - 1 && state.isPlaying) await wait(450);
     }
+    state.loopSegmentIndex = null;
     setPlaying(false);
   }
 
@@ -905,6 +935,7 @@
     clearTimeout(state.mediaStopTimer);
     state.loopTimer = null;
     state.mediaStopTimer = null;
+    state.loopSegmentIndex = null;
     if (state.hasMedia) els.mediaPlayer.pause();
     window.speechSynthesis.cancel();
     setPlaying(false);
@@ -924,13 +955,13 @@
       const end = segment.end + padding;
       els.mediaPlayer.playbackRate = Number(els.speedInput.value);
       els.mediaPlayer.currentTime = start;
-      updateWordHighlight(start, { force: true });
+      updateStudyProgress(start, { force: true });
       const finish = () => {
         clearTimeout(state.mediaStopTimer);
         state.mediaStopTimer = null;
         state.internalPause = true;
         els.mediaPlayer.pause();
-        updateWordHighlight(end, { force: true });
+        updateStudyProgress(end, { force: true });
         setTimeout(() => {
           state.internalPause = false;
         }, 0);
@@ -938,7 +969,7 @@
       };
       const tick = () => {
         if (!state.isPlaying) return finish();
-        updateWordHighlight(els.mediaPlayer.currentTime);
+        updateStudyProgress(els.mediaPlayer.currentTime);
         if (els.mediaPlayer.currentTime >= end) return finish();
         state.mediaStopTimer = setTimeout(tick, 80);
       };

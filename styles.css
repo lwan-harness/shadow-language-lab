@@ -684,6 +684,25 @@ svg {
   box-shadow: inset 0 -3px 0 var(--accent);
 }
 
+.cue-progress {
+  position: relative;
+  height: 8px;
+  margin-top: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(23, 27, 26, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 253, 246, 0.72);
+}
+
+.cue-progress span {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.1s linear;
+}
+
 #cueText {
   position: relative;
   margin: 10px 0 0;
@@ -705,23 +724,23 @@ svg {
   text-align: center;
 }
 
-.cue-word {
+.cue-phrase {
   border-radius: 5px;
-  color: rgba(23, 27, 26, 0.52);
+  color: var(--ink);
   transition:
     background 0.12s ease,
     color 0.12s ease,
     box-shadow 0.12s ease;
 }
 
-.cue-word.past {
+.cue-phrase.past {
   color: var(--ink);
 }
 
-.cue-word.active {
-  background: var(--accent);
+.cue-phrase.active {
+  background: rgba(185, 255, 66, 0.78);
   color: var(--ink);
-  box-shadow: 0 0 0 3px rgba(185, 255, 66, 0.28);
+  box-shadow: 0 0 0 3px rgba(185, 255, 66, 0.22);
 }
 
 .transport {

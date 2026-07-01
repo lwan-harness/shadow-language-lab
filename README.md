@@ -18,7 +18,7 @@ It is useful for practicing spoken English with talks, interviews, courses, podc
 - Automatically group fragmented SRT captions into complete practice passages.
 - Loop the matching video or audio segment by subtitle timestamps.
 - Practice with a three-step flow: blind listening, subtitle study, and subtitle-free retelling.
-- Highlight the estimated current word while the media plays.
+- Show coarse passage progress and phrase-level highlighting while the media plays.
 - Fall back to browser text-to-speech when no media file is available.
 - Record your voice with the microphone.
 - Replay saved practice recordings from the recent attempts list.
