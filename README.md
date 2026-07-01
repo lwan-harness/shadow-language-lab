@@ -17,7 +17,7 @@ It is useful for practicing spoken English with talks, interviews, courses, podc
 - Import subtitles and media from one combined picker.
 - Automatically group fragmented SRT captions into complete practice passages.
 - Loop the matching video or audio segment by subtitle timestamps.
-- Practice with a three-step flow: blind listening, subtitle study, and subtitle-free retelling.
+- Automatically guide each passage through blind listening, subtitle study, and subtitle-free retelling.
 - Show coarse passage progress and phrase-level highlighting while the media plays.
 - Fall back to browser text-to-speech when no media file is available.
 - Record your voice with the microphone.

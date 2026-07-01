@@ -86,7 +86,6 @@
       "cueIndex",
       "cueTime",
       "cueState",
-      "modeButtons",
       "cueProgressFill",
       "cueText",
       "prevButton",
@@ -126,11 +125,6 @@
         document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab === button));
         renderSegments();
       });
-    });
-    els.modeButtons.addEventListener("click", (event) => {
-      const button = event.target.closest("button[data-mode]");
-      if (!button) return;
-      setPracticeMode(button.dataset.mode);
     });
     els.prevButton.addEventListener("click", () => selectSegment(state.selectedIndex - 1));
     els.nextButton.addEventListener("click", () => selectSegment(state.selectedIndex + 1));
@@ -671,7 +665,6 @@
 
   function renderCue() {
     const segment = currentSegment();
-    renderModeButtons();
     if (!segment) {
       els.cueIndex.textContent = "--";
       els.cueTime.textContent = "00:00.000 - 00:00.000";
@@ -682,21 +675,26 @@
     }
     els.cueIndex.textContent = `${segment.index + 1}/${state.segments.length}`;
     els.cueTime.textContent = `${formatTime(segment.start)} - ${formatTime(segment.end)}`;
-    els.cueState.textContent = state.isRecording ? "录音中" : state.isPlaying ? "循环中" : "就绪";
+    els.cueState.textContent = cueStateLabel();
     if (state.practiceMode === "study") {
       renderCuePhrases(segment);
       updateStudyProgress(currentPlaybackTime(), { force: true });
     } else {
-      renderCuePlaceholder(state.practiceMode === "recite" ? "复述评分" : "盲听中");
+      renderCuePlaceholder(modeLabel());
       updateCueProgress(currentPlaybackTime(), segment);
     }
   }
 
-  function renderModeButtons() {
-    if (!els.modeButtons) return;
-    els.modeButtons.querySelectorAll("button[data-mode]").forEach((button) => {
-      button.classList.toggle("active", button.dataset.mode === state.practiceMode);
-    });
+  function modeLabel(mode = state.practiceMode) {
+    if (mode === "study") return "看字幕";
+    if (mode === "recite") return "复述评分";
+    return "盲听";
+  }
+
+  function cueStateLabel() {
+    if (state.isRecording) return "录音中";
+    if (state.isPlaying) return `${modeLabel()}中`;
+    return modeLabel();
   }
 
   function renderCuePlaceholder(text) {
@@ -822,6 +820,7 @@
   function selectSegment(index) {
     if (!state.segments.length) return;
     state.selectedIndex = clamp(index, 0, state.segments.length - 1);
+    state.practiceMode = "listen";
     persistLastSession();
     closeSettings();
     stopLoop({ silent: true });
@@ -839,6 +838,14 @@
     state.practiceMode = mode;
     persistLastSession();
     renderCue();
+  }
+
+  function advancePracticeModeAfterPlayback() {
+    if (state.practiceMode === "listen") {
+      setPracticeMode("study");
+    } else if (state.practiceMode === "study") {
+      setPracticeMode("recite");
+    }
   }
 
   function currentPlaybackTime() {
@@ -861,6 +868,7 @@
     const nextIndex = state.segments.findIndex((segment) => time >= segment.start && time <= segment.end);
     if (nextIndex < 0 || nextIndex === state.selectedIndex) return;
     state.selectedIndex = nextIndex;
+    state.practiceMode = "listen";
     persistLastSession();
     renderSegments();
     renderCue();
@@ -926,8 +934,10 @@
       else await speakSegment(segment);
       if (state.loopEnabled && i < repeats - 1 && state.isPlaying) await wait(450);
     }
+    const completed = state.isPlaying;
     state.loopSegmentIndex = null;
     setPlaying(false);
+    if (completed) advancePracticeModeAfterPlayback();
   }
 
   function stopLoop(options = {}) {
