@@ -51,6 +51,7 @@
     recordStartAt: 0,
     activeStream: null,
     internalPause: false,
+    suppressMediaSyncUntil: 0,
     playingAttemptId: "",
     recordingPlayer: null,
     recordingUrl: "",
@@ -857,8 +858,16 @@
   function handleMediaTimeUpdate() {
     if (!state.hasMedia) return;
     const time = els.mediaPlayer.currentTime;
-    if (state.loopSegmentIndex === null) syncSegmentToMediaTime(time);
+    if (shouldSyncMediaToSegment()) syncSegmentToMediaTime(time);
     updateStudyProgress(time);
+  }
+
+  function shouldSyncMediaToSegment() {
+    return state.loopSegmentIndex === null && !state.internalPause && Date.now() >= state.suppressMediaSyncUntil;
+  }
+
+  function suppressMediaSync(duration = 700) {
+    state.suppressMediaSyncUntil = Date.now() + duration;
   }
 
   function syncSegmentToMediaTime(time) {
@@ -935,9 +944,15 @@
       if (state.loopEnabled && i < repeats - 1 && state.isPlaying) await wait(450);
     }
     const completed = state.isPlaying;
+    if (completed) state.selectedIndex = segment.index;
+    suppressMediaSync(900);
     state.loopSegmentIndex = null;
     setPlaying(false);
-    if (completed) advancePracticeModeAfterPlayback();
+    if (completed) {
+      renderSegments();
+      renderScore();
+      advancePracticeModeAfterPlayback();
+    }
   }
 
   function stopLoop(options = {}) {
@@ -945,6 +960,7 @@
     clearTimeout(state.mediaStopTimer);
     state.loopTimer = null;
     state.mediaStopTimer = null;
+    suppressMediaSync();
     state.loopSegmentIndex = null;
     if (state.hasMedia) els.mediaPlayer.pause();
     window.speechSynthesis.cancel();
@@ -964,12 +980,14 @@
       const start = Math.max(0, segment.start - padding);
       const end = segment.end + padding;
       els.mediaPlayer.playbackRate = Number(els.speedInput.value);
+      suppressMediaSync();
       els.mediaPlayer.currentTime = start;
       updateStudyProgress(start, { force: true });
       const finish = () => {
         clearTimeout(state.mediaStopTimer);
         state.mediaStopTimer = null;
         state.internalPause = true;
+        suppressMediaSync(900);
         els.mediaPlayer.pause();
         updateStudyProgress(end, { force: true });
         setTimeout(() => {
