@@ -812,6 +812,29 @@ svg {
   background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent-3));
 }
 
+.cue[data-cue-label]::after {
+  content: attr(data-cue-label);
+  position: absolute;
+  inset: 58px 18px 14px;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+  font-size: 14px;
+  font-weight: 800;
+  opacity: 1;
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+.cue:hover::after,
+.cue:focus-within::after {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
 .cue-meta {
   position: relative;
   display: flex;
@@ -861,6 +884,22 @@ svg {
   font-size: 18px;
   font-weight: 700;
   line-height: 1.22;
+}
+
+#cueText.cue-subtitle {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+.cue:hover #cueText.cue-subtitle,
+.cue:focus-within #cueText.cue-subtitle {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
 }
 
 #cueText.is-hidden {

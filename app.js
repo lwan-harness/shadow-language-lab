@@ -178,10 +178,13 @@
         closeSettings();
         closeLibrary();
       }
+      if (event.code === "Space" && shouldUseSpaceShortcut(event)) {
+        event.preventDefault();
+        toggleRecording();
+      }
     });
     els.recordButton.addEventListener("click", () => {
-      if (state.isRecording) stopRecording();
-      else startRecording();
+      toggleRecording();
     });
     els.repeatInput.addEventListener("change", () => {
       els.repeatInput.value = clamp(Number(els.repeatInput.value) || 3, 1, 12);
@@ -784,6 +787,7 @@
   function renderCue() {
     const segment = currentSegment();
     if (!segment) {
+      setCueHoverLabel("");
       els.cueIndex.textContent = "--";
       els.cueTime.textContent = "00:00.000 - 00:00.000";
       els.cueState.textContent = state.isPlaying ? "播放中" : "待机";
@@ -794,18 +798,12 @@
     els.cueIndex.textContent = `${segment.index + 1}/${state.segments.length}`;
     els.cueTime.textContent = `${formatTime(segment.start)} - ${formatTime(segment.end)}`;
     els.cueState.textContent = cueStateLabel();
-    if (state.practiceMode === "study") {
-      renderCuePhrases(segment);
-      updateStudyProgress(currentPlaybackTime(), { force: true });
-    } else {
-      renderCuePlaceholder(modeLabel());
-      updateCueProgress(currentPlaybackTime(), segment);
-    }
+    setCueHoverLabel(state.isRecording ? "录音中" : modeLabel());
+    renderCuePhrases(segment);
+    updateStudyProgress(currentPlaybackTime(), { force: true });
   }
 
-  function modeLabel(mode = state.practiceMode) {
-    if (mode === "study") return "看字幕";
-    if (mode === "recite") return "复述评分";
+  function modeLabel() {
     return "盲听";
   }
 
@@ -816,12 +814,13 @@
   }
 
   function renderCuePlaceholder(text) {
+    setCueHoverLabel("");
     els.cueText.className = "is-hidden";
     els.cueText.textContent = text;
   }
 
   function renderCuePhrases(segment) {
-    els.cueText.className = "";
+    els.cueText.className = "cue-subtitle";
     els.cueText.innerHTML = "";
     const fragment = document.createDocumentFragment();
     const phrases = segment.phrases && segment.phrases.length
@@ -836,6 +835,13 @@
       fragment.appendChild(span);
     });
     els.cueText.appendChild(fragment);
+  }
+
+  function setCueHoverLabel(label) {
+    const cue = els.cueText.closest(".cue");
+    if (!cue) return;
+    if (label) cue.dataset.cueLabel = label;
+    else delete cue.dataset.cueLabel;
   }
 
   function renderScore() {
@@ -959,21 +965,6 @@
     return state.segments[state.selectedIndex] || null;
   }
 
-  function setPracticeMode(mode) {
-    if (!["listen", "study", "recite"].includes(mode)) return;
-    state.practiceMode = mode;
-    persistLastSession();
-    renderCue();
-  }
-
-  function advancePracticeModeAfterPlayback() {
-    if (state.practiceMode === "listen") {
-      setPracticeMode("study");
-    } else if (state.practiceMode === "study") {
-      setPracticeMode("recite");
-    }
-  }
-
   function currentPlaybackTime() {
     return state.hasMedia && Number.isFinite(els.mediaPlayer.currentTime)
       ? els.mediaPlayer.currentTime
@@ -1014,7 +1005,7 @@
       ? currentSegment()
       : state.segments[state.loopSegmentIndex];
     updateCueProgress(time, segment);
-    if (state.practiceMode !== "study" || !Number.isFinite(time)) return;
+    if (!Number.isFinite(time)) return;
     if (!segment || !segment.phrases) return;
     const phrases = els.cueText.querySelectorAll(".cue-phrase");
     if (!phrases.length) return;
@@ -1093,7 +1084,7 @@
     if (completed) {
       renderSegments();
       renderScore();
-      advancePracticeModeAfterPlayback();
+      renderCue();
     }
   }
 
@@ -1188,8 +1179,9 @@
       return;
     }
     try {
+      stopLoop({ silent: true });
       stopAttemptPlayback({ silent: true });
-      setPracticeMode("recite");
+      state.practiceMode = "listen";
       state.activeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       state.recordedChunks = [];
       state.recognitionText = "";
@@ -1211,6 +1203,19 @@
     } catch (error) {
       toast("麦克风权限被拒绝");
     }
+  }
+
+  function toggleRecording() {
+    if (state.isRecording) stopRecording();
+    else startRecording();
+  }
+
+  function shouldUseSpaceShortcut(event) {
+    if (event.defaultPrevented || event.repeat) return false;
+    const target = event.target;
+    if (!target) return true;
+    const tag = target.tagName ? target.tagName.toLowerCase() : "";
+    return !target.isContentEditable && !["input", "textarea", "select"].includes(tag);
   }
 
   function stopRecording() {
@@ -1601,9 +1606,7 @@
       state.segments = segmentEntries(state.rawEntries);
     }
     state.selectedIndex = clamp(Number(meta.selectedIndex ?? record.selectedIndex) || 0, 0, Math.max(0, state.segments.length - 1));
-    state.practiceMode = ["listen", "study", "recite"].includes(meta.practiceMode || record.practiceMode)
-      ? meta.practiceMode || record.practiceMode
-      : "listen";
+    state.practiceMode = "listen";
     state.search = "";
     els.searchInput.value = "";
     loadProgress();
@@ -1669,7 +1672,7 @@
       state.rawEntries = entries;
       state.segments = segmentEntries(entries);
       state.selectedIndex = clamp(Number(saved.selectedIndex) || 0, 0, Math.max(0, state.segments.length - 1));
-      state.practiceMode = ["listen", "study", "recite"].includes(saved.practiceMode) ? saved.practiceMode : "listen";
+      state.practiceMode = "listen";
       state.restoredSession = true;
     } catch (error) {
       localStorage.removeItem(LAST_SESSION_KEY);
