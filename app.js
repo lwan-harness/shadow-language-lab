@@ -43,6 +43,7 @@
     mediaName: "",
     hasMedia: false,
     isPlaying: false,
+    playbackRunId: 0,
     isRecording: false,
     loopSegmentIndex: null,
     loopEnabled: true,
@@ -149,8 +150,8 @@
         renderSegments();
       });
     });
-    els.prevButton.addEventListener("click", () => selectSegment(state.selectedIndex - 1));
-    els.nextButton.addEventListener("click", () => selectSegment(state.selectedIndex + 1));
+    els.prevButton.addEventListener("click", () => selectAndPlaySegment(state.selectedIndex - 1));
+    els.nextButton.addEventListener("click", () => selectAndPlaySegment(state.selectedIndex + 1));
     els.playButton.addEventListener("click", () => {
       if (state.isPlaying) {
         stopLoop();
@@ -914,6 +915,14 @@
     renderScore();
   }
 
+  function selectAndPlaySegment(index) {
+    if (!state.segments.length) return;
+    selectSegment(index);
+    window.setTimeout(() => {
+      if (state.segments.length) startLoop();
+    }, 0);
+  }
+
   function currentSegment() {
     return state.segments[state.selectedIndex] || null;
   }
@@ -1033,14 +1042,17 @@
       return;
     }
     stopLoop({ silent: true });
+    const runId = state.playbackRunId + 1;
+    state.playbackRunId = runId;
     state.loopSegmentIndex = segment.index;
     setPlaying(true);
     const repeats = state.loopEnabled ? Number(els.repeatInput.value) || 3 : 1;
-    for (let i = 0; i < repeats && state.isPlaying; i += 1) {
-      if (state.hasMedia) await playMediaSegment(segment);
+    for (let i = 0; i < repeats && state.isPlaying && state.playbackRunId === runId; i += 1) {
+      if (state.hasMedia) await playMediaSegment(segment, runId);
       else await speakSegment(segment);
-      if (state.loopEnabled && i < repeats - 1 && state.isPlaying) await wait(450);
+      if (state.loopEnabled && i < repeats - 1 && state.isPlaying && state.playbackRunId === runId) await wait(450);
     }
+    if (state.playbackRunId !== runId) return;
     const completed = state.isPlaying;
     if (completed) state.selectedIndex = segment.index;
     suppressMediaSync(900);
@@ -1054,13 +1066,20 @@
   }
 
   function stopLoop(options = {}) {
+    if (!options.keepRunId) state.playbackRunId += 1;
     clearTimeout(state.loopTimer);
     clearTimeout(state.mediaStopTimer);
     state.loopTimer = null;
     state.mediaStopTimer = null;
     suppressMediaSync();
     state.loopSegmentIndex = null;
-    if (state.hasMedia) els.mediaPlayer.pause();
+    if (state.hasMedia) {
+      state.internalPause = true;
+      els.mediaPlayer.pause();
+      setTimeout(() => {
+        state.internalPause = false;
+      }, 0);
+    }
     window.speechSynthesis.cancel();
     setPlaying(false);
     if (!options.silent) toast("已停止");
@@ -1072,8 +1091,9 @@
     renderCue();
   }
 
-  function playMediaSegment(segment) {
+  function playMediaSegment(segment, runId) {
     return new Promise((resolve) => {
+      const isActiveRun = () => state.playbackRunId === runId;
       const padding = Number(els.paddingInput.value) || 0;
       const start = Math.max(0, segment.start - padding);
       const end = segment.end + padding;
@@ -1084,6 +1104,10 @@
       const finish = () => {
         clearTimeout(state.mediaStopTimer);
         state.mediaStopTimer = null;
+        if (!isActiveRun()) {
+          resolve();
+          return;
+        }
         state.internalPause = true;
         suppressMediaSync(900);
         els.mediaPlayer.pause();
@@ -1094,13 +1118,16 @@
         resolve();
       };
       const tick = () => {
-        if (!state.isPlaying) return finish();
+        if (!state.isPlaying || !isActiveRun()) return finish();
         updateStudyProgress(els.mediaPlayer.currentTime);
         if (els.mediaPlayer.currentTime >= end) return finish();
         state.mediaStopTimer = setTimeout(tick, 80);
       };
-      els.mediaPlayer.play().then(tick).catch(() => {
-        toast("媒体播放被浏览器拦截");
+      els.mediaPlayer.play().then(() => {
+        if (isActiveRun()) tick();
+        else resolve();
+      }).catch(() => {
+        if (isActiveRun()) toast("媒体播放被浏览器拦截");
         finish();
       });
     });
