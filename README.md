@@ -4,6 +4,8 @@
 
 Shadow Language Lab is a local-first shadowing practice tool for turning SRT subtitles and media files into focused speaking drills.
 
+[Live demo](https://lwan-harness.github.io/shadow-language-lab/)
+
 ![Shadow Language Lab screenshot](./assets/shadow-language-lab.png)
 
 ## What It Is

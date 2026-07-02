@@ -4,6 +4,8 @@
 
 Shadow Language Lab 是一个本地优先的 shadowing 练习工具，可以把 SRT 字幕和音视频文件转成聚焦的口语跟读练习。
 
+[在线访问](https://lwan-harness.github.io/shadow-language-lab/)
+
 ![Shadow Language Lab 截图](./assets/shadow-language-lab.png)
 
 ## 这是什么
