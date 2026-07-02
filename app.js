@@ -151,6 +151,7 @@
         state.filter = button.dataset.filter;
         document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab === button));
         renderSegments();
+        scrollSelectedSegmentIntoView({ force: true });
       });
     });
     els.prevButton.addEventListener("click", () => selectAndPlaySegment(state.selectedIndex - 1));
@@ -771,6 +772,28 @@
     els.segmentList.appendChild(fragment);
   }
 
+  function scrollSelectedSegmentIntoView(options = {}) {
+    const { behavior = "smooth", force = false } = options;
+    window.requestAnimationFrame(() => {
+      const active = els.segmentList.querySelector(".segment-item.active");
+      if (!active) return;
+      const listRect = els.segmentList.getBoundingClientRect();
+      const activeRect = active.getBoundingClientRect();
+      const isVisible = activeRect.top >= listRect.top && activeRect.bottom <= listRect.bottom;
+      if (isVisible && !force) return;
+      const targetTop =
+        els.segmentList.scrollTop +
+        activeRect.top -
+        listRect.top -
+        (listRect.height - activeRect.height) / 2;
+      try {
+        els.segmentList.scrollTo({ top: Math.max(0, targetTop), behavior });
+      } catch (error) {
+        els.segmentList.scrollTop = Math.max(0, targetTop);
+      }
+    });
+  }
+
   function emptySegmentMessage() {
     if (state.search) return "没有匹配的段落。";
     if (state.filter === "bookmarked") return "还没有收藏段落。";
@@ -976,6 +999,7 @@
     state.practiceMode = "listen";
     persistLastSession();
     renderSegments();
+    scrollSelectedSegmentIntoView({ force: true });
     renderCue();
     renderBookmarkButton();
     renderScore();
@@ -1006,6 +1030,7 @@
     closeSettings();
     stopLoop({ silent: true });
     renderSegments();
+    scrollSelectedSegmentIntoView();
     renderCue();
     renderBookmarkButton();
     renderScore();
