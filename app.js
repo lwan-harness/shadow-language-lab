@@ -37,7 +37,7 @@
     practiceMode: "listen",
     filter: "all",
     search: "",
-    progress: { attempts: {}, history: [] },
+    progress: defaultProgress(),
     materials: [],
     mediaUrl: "",
     mediaName: "",
@@ -720,17 +720,29 @@
     const visible = state.segments.filter((segment) => {
       const best = bestScore(segment.id);
       const done = best >= DONE_SCORE;
+      if (state.filter === "bookmarked" && !isBookmarked(segment.id)) return false;
       if (state.filter === "due" && done) return false;
       if (state.filter === "done" && !done) return false;
       if (state.search && !segment.text.toLowerCase().includes(state.search)) return false;
       return true;
     });
 
+    if (!visible.length) {
+      const empty = document.createElement("li");
+      empty.className = "segment-empty";
+      empty.textContent = emptySegmentMessage();
+      els.segmentList.appendChild(empty);
+      return;
+    }
+
     const fragment = document.createDocumentFragment();
     visible.forEach((segment) => {
       const li = document.createElement("li");
+      li.className = "segment-row";
       const button = document.createElement("button");
+      const bookmarkButton = document.createElement("button");
       const best = bestScore(segment.id);
+      const bookmarked = isBookmarked(segment.id);
       const scoreClass = best >= DONE_SCORE ? "good" : best ? "mid" : "";
       button.className = `segment-item${segment.index === state.selectedIndex ? " active" : ""}`;
       button.type = "button";
@@ -744,10 +756,29 @@
         <span class="seg-score ${scoreClass}">${best ? Math.round(best) : "--"}</span>
       `;
       button.addEventListener("click", () => selectAndPlaySegment(segment.index));
+      bookmarkButton.className = `segment-bookmark${bookmarked ? " active" : ""}`;
+      bookmarkButton.type = "button";
+      bookmarkButton.title = bookmarked ? "取消收藏" : "收藏这段";
+      bookmarkButton.setAttribute("aria-label", bookmarked ? "取消收藏这段" : "收藏这段");
+      bookmarkButton.setAttribute("aria-pressed", String(bookmarked));
+      bookmarkButton.innerHTML = '<svg><use href="#icon-bookmark"></use></svg>';
+      bookmarkButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleBookmark(segment.id);
+      });
       li.appendChild(button);
+      li.appendChild(bookmarkButton);
       fragment.appendChild(li);
     });
     els.segmentList.appendChild(fragment);
+  }
+
+  function emptySegmentMessage() {
+    if (state.search) return "没有匹配的段落。";
+    if (state.filter === "bookmarked") return "还没有收藏段落。";
+    if (state.filter === "due") return "没有待练段落。";
+    if (state.filter === "done") return "还没有已过段落。";
+    return "导入字幕开始练习。";
   }
 
   function renderCue() {
@@ -1392,6 +1423,24 @@
     return (state.progress.attempts[segmentId] || [])[0] || null;
   }
 
+  function isBookmarked(segmentId) {
+    return Boolean(state.progress.bookmarks && state.progress.bookmarks[segmentId]);
+  }
+
+  function toggleBookmark(segmentId) {
+    if (!segmentId) return;
+    state.progress = normalizeProgress(state.progress);
+    if (isBookmarked(segmentId)) {
+      delete state.progress.bookmarks[segmentId];
+      toast("已取消收藏");
+    } else {
+      state.progress.bookmarks[segmentId] = Date.now();
+      toast("已收藏");
+    }
+    persistProgress();
+    renderSegments();
+  }
+
   function bestScore(segmentId) {
     const attempts = state.progress.attempts[segmentId] || [];
     return attempts.reduce((best, attempt) => Math.max(best, attempt.score || (attempt.manual ? attempt.manual * 20 : 0)), 0);
@@ -1578,14 +1627,27 @@
   function loadProgress() {
     try {
       const raw = localStorage.getItem(STORAGE_PREFIX + state.fileId);
-      state.progress = raw ? JSON.parse(raw) : { attempts: {}, history: [] };
+      state.progress = normalizeProgress(raw ? JSON.parse(raw) : null);
     } catch (error) {
-      state.progress = { attempts: {}, history: [] };
+      state.progress = defaultProgress();
     }
   }
 
   function persistProgress() {
+    state.progress = normalizeProgress(state.progress);
     localStorage.setItem(STORAGE_PREFIX + state.fileId, JSON.stringify(state.progress));
+  }
+
+  function defaultProgress() {
+    return { attempts: {}, history: [], bookmarks: {} };
+  }
+
+  function normalizeProgress(progress) {
+    return {
+      attempts: progress && progress.attempts && typeof progress.attempts === "object" ? progress.attempts : {},
+      history: progress && Array.isArray(progress.history) ? progress.history : [],
+      bookmarks: progress && progress.bookmarks && typeof progress.bookmarks === "object" ? progress.bookmarks : {},
+    };
   }
 
   function restoreLastSession() {
@@ -1783,9 +1845,11 @@
   function resetProgress() {
     if (!state.segments.length) return;
     stopAttemptPlayback({ silent: true });
+    const bookmarks = { ...(state.progress.bookmarks || {}) };
     deleteRecordingsForProgress(state.progress);
     localStorage.removeItem(STORAGE_PREFIX + state.fileId);
-    state.progress = { attempts: {}, history: [] };
+    state.progress = { ...defaultProgress(), bookmarks };
+    if (Object.keys(bookmarks).length) persistProgress();
     renderAll();
     toast("进度已重置");
   }
