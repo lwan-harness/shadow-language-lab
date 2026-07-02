@@ -180,6 +180,7 @@ svg {
 .round-button,
 .main-button,
 .record-button,
+.library-delete,
 .attempt-play,
 .manual-buttons button {
   display: inline-flex;
@@ -313,6 +314,13 @@ svg {
   list-style: none;
 }
 
+.library-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 8px;
+  align-items: stretch;
+}
+
 .library-item {
   display: grid;
   width: 100%;
@@ -323,6 +331,18 @@ svg {
   background: var(--surface-cool);
   color: var(--ink);
   text-align: left;
+}
+
+.library-delete {
+  width: 42px;
+  min-height: 100%;
+  background: var(--surface);
+  color: var(--danger);
+}
+
+.library-delete svg {
+  width: 18px;
+  height: 18px;
 }
 
 .library-item:hover,
@@ -358,6 +378,7 @@ svg {
 .round-button:hover,
 .main-button:hover,
 .record-button:hover,
+.library-delete:hover,
 .attempt-play:hover,
 .manual-buttons button:hover {
   transform: translate(-2px, -2px);

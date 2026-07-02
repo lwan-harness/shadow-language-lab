@@ -17,7 +17,7 @@ It is useful for practicing spoken English with talks, interviews, courses, podc
 ## Features
 
 - Import subtitles and media from one combined picker.
-- Keep imported materials in a local library so you can switch between videos.
+- Keep imported materials in a local library so you can switch between videos and delete stale records.
 - Automatically group fragmented SRT captions into complete practice passages.
 - Loop the matching video or audio segment by subtitle timestamps.
 - Automatically guide each passage through blind listening, subtitle study, and subtitle-free retelling.

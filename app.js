@@ -139,6 +139,12 @@
     });
     els.libraryPanel.addEventListener("click", (event) => {
       event.stopPropagation();
+      const deleteButton = event.target.closest("button[data-delete-material-id]");
+      if (deleteButton) {
+        event.preventDefault();
+        deleteMaterial(deleteButton.dataset.deleteMaterialId);
+        return;
+      }
       const button = event.target.closest("button[data-material-id]");
       if (button) loadMaterial(button.dataset.materialId);
     });
@@ -699,6 +705,7 @@
     state.materials.forEach((material) => {
       const li = document.createElement("li");
       const button = document.createElement("button");
+      const deleteButton = document.createElement("button");
       const isActive = material.id === state.materialId;
       const title = material.subtitleName || material.mediaName || "未命名素材";
       const detail = [
@@ -706,6 +713,7 @@
         material.mediaName ? "有媒体" : "无媒体",
         formatLibraryTime(material.updatedAt || material.savedAt),
       ].filter(Boolean).join(" · ");
+      li.className = "library-row";
       button.type = "button";
       button.dataset.materialId = material.id;
       button.className = `library-item${isActive ? " active" : ""}`;
@@ -713,7 +721,14 @@
         <span>${escapeHtml(title)}</span>
         <small>${escapeHtml(detail)}</small>
       `;
+      deleteButton.type = "button";
+      deleteButton.dataset.deleteMaterialId = material.id;
+      deleteButton.className = "library-delete";
+      deleteButton.title = "删除素材记录";
+      deleteButton.setAttribute("aria-label", `删除素材记录：${title}`);
+      deleteButton.innerHTML = '<svg><use href="#icon-trash"></use></svg>';
       li.appendChild(button);
+      li.appendChild(deleteButton);
       fragment.appendChild(li);
     });
     els.libraryList.appendChild(fragment);
@@ -1615,6 +1630,7 @@
 
   function persistActiveMaterial() {
     if (state.materialId) localStorage.setItem(ACTIVE_MATERIAL_KEY, state.materialId);
+    else localStorage.removeItem(ACTIVE_MATERIAL_KEY);
   }
 
   function materialRecordKey(id) {
@@ -1715,6 +1731,85 @@
     }
   }
 
+  async function deleteMaterial(id) {
+    if (!id) return;
+    const material = state.materials.find((item) => item.id === id);
+    const title = material?.subtitleName || material?.mediaName || "这条素材";
+    const confirmed = window.confirm(`删除「${title}」？\n字幕、媒体缓存、练习进度和录音都会一起删除。`);
+    if (!confirmed) return;
+
+    const wasActive = id === state.materialId;
+    const currentIndex = state.materials.findIndex((item) => item.id === id);
+    const nextMaterial = wasActive
+      ? state.materials[currentIndex + 1] || state.materials[currentIndex - 1] || null
+      : null;
+    const record = await mediaDbRequest("readonly", (store) => store.get(materialRecordKey(id))).catch(() => null);
+    deleteProgressForFile(record?.fileId || material?.fileId);
+
+    state.materials = state.materials.filter((item) => item.id !== id);
+    persistMaterialIndex();
+
+    try {
+      await mediaDbRequest("readwrite", (store) => store.delete(materialRecordKey(id)));
+      toast("已删除素材记录");
+    } catch (error) {
+      toast("已删除列表记录，缓存清理失败");
+    }
+
+    if (wasActive && nextMaterial) {
+      await loadMaterial(nextMaterial.id, { silent: true });
+    } else if (wasActive) {
+      resetCurrentMaterial();
+    } else {
+      renderLibrary();
+    }
+  }
+
+  function resetCurrentMaterial() {
+    cancelRecording();
+    stopLoop({ silent: true });
+    stopAttemptPlayback({ silent: true });
+    clearMedia();
+    state.fileId = "empty";
+    state.materialId = "";
+    state.fileName = "";
+    state.subtitleText = "";
+    state.rawEntries = [];
+    state.segments = [];
+    state.selectedIndex = 0;
+    state.practiceMode = "listen";
+    state.filter = "all";
+    state.search = "";
+    state.progress = defaultProgress();
+    els.searchInput.value = "";
+    document.querySelectorAll(".tab").forEach((tab) => {
+      tab.classList.toggle("active", tab.dataset.filter === state.filter);
+    });
+    localStorage.removeItem(LAST_SESSION_KEY);
+    persistActiveMaterial();
+    renderAll();
+  }
+
+  function cancelRecording() {
+    if (!state.isRecording && !state.recorder && !state.activeStream) return;
+    if (state.recorder && state.recorder.state !== "inactive") {
+      state.recorder.ondataavailable = null;
+      state.recorder.onstop = null;
+      try {
+        state.recorder.stop();
+      } catch (error) {
+        // The recorder can already be stopping in some browsers.
+      }
+    }
+    stopSpeechRecognition();
+    stopActiveStream();
+    state.recorder = null;
+    state.recordedChunks = [];
+    state.isRecording = false;
+    els.recordButton.classList.remove("recording");
+    els.recordButton.innerHTML = '<svg><use href="#icon-mic"></use></svg>';
+  }
+
   function applyMaterialRecord(record, meta = {}) {
     stopLoop({ silent: true });
     stopAttemptPlayback({ silent: true });
@@ -1757,6 +1852,18 @@
     } catch (error) {
       state.progress = defaultProgress();
     }
+  }
+
+  function deleteProgressForFile(fileId) {
+    if (!fileId || fileId === "empty") return;
+    try {
+      const raw = localStorage.getItem(STORAGE_PREFIX + fileId);
+      const progress = normalizeProgress(raw ? JSON.parse(raw) : null);
+      deleteRecordingsForProgress(progress);
+    } catch (error) {
+      // Progress cleanup should not block deleting the material record.
+    }
+    localStorage.removeItem(STORAGE_PREFIX + fileId);
   }
 
   function persistProgress() {
