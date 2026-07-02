@@ -62,6 +62,8 @@
     playingAttemptId: "",
     recordingPlayer: null,
     recordingUrl: "",
+    recordingBlobs: new Map(),
+    recordingBlobRequests: new Map(),
   };
 
   const els = {};
@@ -900,6 +902,7 @@
       fragment.appendChild(li);
     }
     els.attemptList.appendChild(fragment);
+    primeAttemptRecordings(items);
   }
 
   async function playAttemptRecording(attempt) {
@@ -908,15 +911,25 @@
       stopAttemptPlayback();
       return;
     }
+    focusAttemptSegment(attempt);
+    stopLoop({ silent: true });
     stopAttemptPlayback({ silent: true });
     try {
-      const record = await recordingDbRequest("readonly", (store) => store.get(attempt.audioId));
-      if (!record || !record.blob) {
-        toast("找不到录音");
+      let blob = state.recordingBlobs.get(attempt.audioId);
+      if (!blob) blob = await getAttemptRecordingBlob(attempt.audioId);
+      if (!blob || !blob.size) {
+        toast("这条录音不可用，请重新录一次");
         return;
       }
-      const url = URL.createObjectURL(record.blob);
-      const audio = new Audio(url);
+      const url = URL.createObjectURL(blob);
+      const audio = document.createElement("audio");
+      audio.src = url;
+      audio.preload = "auto";
+      audio.muted = false;
+      audio.volume = 1;
+      audio.playsInline = true;
+      audio.style.display = "none";
+      document.body.appendChild(audio);
       state.recordingPlayer = audio;
       state.recordingUrl = url;
       state.playingAttemptId = attempt.id;
@@ -933,9 +946,47 @@
     }
   }
 
+  function primeAttemptRecordings(attempts) {
+    attempts.forEach((attempt) => {
+      if (attempt.audioId) getAttemptRecordingBlob(attempt.audioId).catch(() => {});
+    });
+  }
+
+  function getAttemptRecordingBlob(audioId) {
+    if (!audioId) return Promise.resolve(null);
+    if (state.recordingBlobs.has(audioId)) return Promise.resolve(state.recordingBlobs.get(audioId));
+    if (state.recordingBlobRequests.has(audioId)) return state.recordingBlobRequests.get(audioId);
+    const request = recordingDbRequest("readonly", (store) => store.get(audioId))
+      .then((record) => {
+        const blob = record && record.blob && record.blob.size ? record.blob : null;
+        if (blob) state.recordingBlobs.set(audioId, blob);
+        return blob;
+      })
+      .finally(() => {
+        state.recordingBlobRequests.delete(audioId);
+      });
+    state.recordingBlobRequests.set(audioId, request);
+    return request;
+  }
+
+  function focusAttemptSegment(attempt) {
+    const index = state.segments.findIndex((segment) => segment.id === attempt.segmentId);
+    if (index < 0) return;
+    state.selectedIndex = index;
+    state.practiceMode = "listen";
+    persistLastSession();
+    renderSegments();
+    renderCue();
+    renderBookmarkButton();
+    renderScore();
+  }
+
   function stopAttemptPlayback(options = {}) {
     if (state.recordingPlayer) {
       state.recordingPlayer.pause();
+      state.recordingPlayer.removeAttribute("src");
+      state.recordingPlayer.load();
+      if (state.recordingPlayer.parentNode) state.recordingPlayer.parentNode.removeChild(state.recordingPlayer);
       state.recordingPlayer = null;
     }
     if (state.recordingUrl) {
@@ -1186,6 +1237,10 @@
       toast("无法使用麦克风");
       return;
     }
+    if (!window.MediaRecorder) {
+      toast("当前浏览器不能录音");
+      return;
+    }
     try {
       stopLoop({ silent: true });
       stopAttemptPlayback({ silent: true });
@@ -1193,7 +1248,7 @@
       state.activeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       state.recordedChunks = [];
       state.recognitionText = "";
-      state.recorder = new MediaRecorder(state.activeStream);
+      state.recorder = createMediaRecorder(state.activeStream);
       state.recorder.ondataavailable = (event) => {
         if (event.data && event.data.size) state.recordedChunks.push(event.data);
       };
@@ -1209,7 +1264,8 @@
       renderCue();
       toast("录音中");
     } catch (error) {
-      toast("麦克风权限被拒绝");
+      stopActiveStream();
+      toast("录音启动失败");
     }
   }
 
@@ -1227,56 +1283,67 @@
   }
 
   function stopRecording() {
-    if (state.recorder && state.recorder.state !== "inactive") state.recorder.stop();
+    if (state.recorder && state.recorder.state !== "inactive") {
+      try {
+        state.recorder.requestData();
+      } catch (error) {
+        // Some browsers only flush data during stop.
+      }
+      state.recorder.stop();
+    } else {
+      stopActiveStream();
+    }
     stopSpeechRecognition();
     state.isRecording = false;
     els.recordButton.classList.remove("recording");
     els.recordButton.innerHTML = '<svg><use href="#icon-mic"></use></svg>';
-    if (state.activeStream) {
-      state.activeStream.getTracks().forEach((track) => track.stop());
-      state.activeStream = null;
-    }
     renderCue();
   }
 
   async function finalizeRecording() {
-    const segment = currentSegment();
-    if (!segment) return;
-    const duration = Math.max(0.1, (performance.now() - state.recordStartAt) / 1000);
-    const recognized = state.recognitionText.trim();
-    const auto = recognized ? scoreAttempt(segment.text, recognized, segment.end - segment.start, duration) : null;
-    const attemptId = `attempt-${Date.now()}`;
-    const audioBlob = makeRecordingBlob();
-    let audioId = "";
-    if (audioBlob && audioBlob.size) {
-      audioId = attemptId;
-      try {
-        await cacheRecordingBlob(audioId, audioBlob, {
-          segmentId: segment.id,
-          duration,
-          at: Date.now(),
-        });
-      } catch (error) {
-        audioId = "";
-        toast("录音保存失败");
+    try {
+      const segment = currentSegment();
+      if (!segment) return;
+      const duration = Math.max(0.1, (performance.now() - state.recordStartAt) / 1000);
+      const recognized = state.recognitionText.trim();
+      const auto = recognized ? scoreAttempt(segment.text, recognized, segment.end - segment.start, duration) : null;
+      const attemptId = `attempt-${Date.now()}`;
+      const audioBlob = makeRecordingBlob();
+      let audioId = "";
+      if (audioBlob && audioBlob.size) {
+        audioId = attemptId;
+        try {
+          await cacheRecordingBlob(audioId, audioBlob, {
+            segmentId: segment.id,
+            duration,
+            at: Date.now(),
+          });
+        } catch (error) {
+          audioId = "";
+          toast("录音保存失败");
+        }
       }
+      const attempt = {
+        id: attemptId,
+        segmentId: segment.id,
+        at: Date.now(),
+        duration,
+        recognized,
+        score: auto ? auto.score : null,
+        accuracy: auto ? auto.accuracy : null,
+        pace: auto ? auto.pace : null,
+        manual: null,
+        audioId,
+        audioType: audioBlob ? audioBlob.type : "",
+      };
+      saveAttempt(attempt);
+      renderAll();
+      toast(recognized ? `得分 ${Math.round(auto.score)}` : "已保存，可手动评分");
+    } finally {
+      stopActiveStream();
+      state.recorder = null;
+      state.recordedChunks = [];
     }
-    const attempt = {
-      id: attemptId,
-      segmentId: segment.id,
-      at: Date.now(),
-      duration,
-      recognized,
-      score: auto ? auto.score : null,
-      accuracy: auto ? auto.accuracy : null,
-      pace: auto ? auto.pace : null,
-      manual: null,
-      audioId,
-      audioType: audioBlob ? audioBlob.type : "",
-    };
-    saveAttempt(attempt);
-    renderAll();
-    toast(recognized ? `得分 ${Math.round(auto.score)}` : "已保存，可手动评分");
   }
 
   function makeRecordingBlob() {
@@ -1285,8 +1352,30 @@
     return new Blob(state.recordedChunks, { type });
   }
 
+  function createMediaRecorder(stream) {
+    const mimeType = preferredRecordingMimeType();
+    return mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+  }
+
+  function preferredRecordingMimeType() {
+    if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return "";
+    return [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/mp4",
+      "audio/aac",
+    ].find((type) => MediaRecorder.isTypeSupported(type)) || "";
+  }
+
+  function stopActiveStream() {
+    if (!state.activeStream) return;
+    state.activeStream.getTracks().forEach((track) => track.stop());
+    state.activeStream = null;
+  }
+
   function cacheRecordingBlob(id, blob, meta = {}) {
     if (!blob || !window.indexedDB) return Promise.reject(new Error("Recording storage unavailable"));
+    state.recordingBlobs.set(id, blob);
     return recordingDbRequest("readwrite", (store) =>
       store.put(
         {
