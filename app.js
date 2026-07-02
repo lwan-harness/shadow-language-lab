@@ -734,6 +734,7 @@
       const scoreClass = best >= DONE_SCORE ? "good" : best ? "mid" : "";
       button.className = `segment-item${segment.index === state.selectedIndex ? " active" : ""}`;
       button.type = "button";
+      button.title = "选择并播放";
       button.innerHTML = `
         <span class="seg-no">${segment.index + 1}</span>
         <span class="seg-copy">
@@ -742,7 +743,7 @@
         </span>
         <span class="seg-score ${scoreClass}">${best ? Math.round(best) : "--"}</span>
       `;
-      button.addEventListener("click", () => selectSegment(segment.index));
+      button.addEventListener("click", () => selectAndPlaySegment(segment.index));
       li.appendChild(button);
       fragment.appendChild(li);
     });
