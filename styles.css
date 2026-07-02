@@ -177,7 +177,6 @@ svg {
 .import-button,
 .icon-button,
 .tab,
-.segment-bookmark,
 .round-button,
 .main-button,
 .record-button,
@@ -356,7 +355,6 @@ svg {
 .import-button:hover,
 .icon-button:hover,
 .tab:hover,
-.segment-bookmark:hover,
 .round-button:hover,
 .main-button:hover,
 .record-button:hover,
@@ -549,20 +547,13 @@ svg {
   overflow: auto;
 }
 
-.segment-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 36px;
-  gap: 6px;
-  align-items: stretch;
-}
-
-.segment-row + .segment-row {
+.segment-list li + li {
   margin-top: 4px;
 }
 
 .segment-item {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) 36px;
+  grid-template-columns: 42px minmax(0, 1fr) 42px;
   gap: 9px;
   align-items: start;
   width: 100%;
@@ -583,24 +574,6 @@ svg {
     linear-gradient(90deg, rgba(185, 255, 66, 0.34), rgba(20, 184, 200, 0.1)),
     var(--surface);
   box-shadow: 4px 4px 0 rgba(23, 27, 26, 0.16);
-}
-
-.segment-bookmark {
-  align-self: start;
-  width: 36px;
-  min-height: 36px;
-  border-radius: 50%;
-  color: var(--muted);
-}
-
-.segment-bookmark:hover,
-.segment-bookmark.active {
-  background: var(--accent);
-  color: var(--ink);
-}
-
-.segment-bookmark.active svg {
-  fill: currentColor;
 }
 
 .segment-empty {
@@ -972,6 +945,17 @@ svg {
 .round-button.active {
   background: var(--accent);
   color: var(--ink);
+}
+
+.bookmark-button.active svg {
+  fill: currentColor;
+}
+
+.bookmark-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
+  box-shadow: none;
 }
 
 .record-button {

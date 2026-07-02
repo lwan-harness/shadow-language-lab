@@ -110,6 +110,7 @@
       "settingsButton",
       "settingsPanel",
       "recordButton",
+      "bookmarkButton",
       "repeatInput",
       "speedInput",
       "speedOutput",
@@ -185,6 +186,11 @@
     });
     els.recordButton.addEventListener("click", () => {
       toggleRecording();
+    });
+    els.bookmarkButton.addEventListener("click", () => {
+      const segment = currentSegment();
+      if (!segment) return;
+      toggleBookmark(segment.id);
     });
     els.repeatInput.addEventListener("change", () => {
       els.repeatInput.value = clamp(Number(els.repeatInput.value) || 3, 1, 12);
@@ -655,6 +661,7 @@
     renderMetrics();
     renderSegments();
     renderCue();
+    renderBookmarkButton();
     renderScore();
     renderAttempts();
     renderLibrary();
@@ -741,11 +748,8 @@
     const fragment = document.createDocumentFragment();
     visible.forEach((segment) => {
       const li = document.createElement("li");
-      li.className = "segment-row";
       const button = document.createElement("button");
-      const bookmarkButton = document.createElement("button");
       const best = bestScore(segment.id);
-      const bookmarked = isBookmarked(segment.id);
       const scoreClass = best >= DONE_SCORE ? "good" : best ? "mid" : "";
       button.className = `segment-item${segment.index === state.selectedIndex ? " active" : ""}`;
       button.type = "button";
@@ -759,18 +763,7 @@
         <span class="seg-score ${scoreClass}">${best ? Math.round(best) : "--"}</span>
       `;
       button.addEventListener("click", () => selectAndPlaySegment(segment.index));
-      bookmarkButton.className = `segment-bookmark${bookmarked ? " active" : ""}`;
-      bookmarkButton.type = "button";
-      bookmarkButton.title = bookmarked ? "取消收藏" : "收藏这段";
-      bookmarkButton.setAttribute("aria-label", bookmarked ? "取消收藏这段" : "收藏这段");
-      bookmarkButton.setAttribute("aria-pressed", String(bookmarked));
-      bookmarkButton.innerHTML = '<svg><use href="#icon-bookmark"></use></svg>';
-      bookmarkButton.addEventListener("click", (event) => {
-        event.stopPropagation();
-        toggleBookmark(segment.id);
-      });
       li.appendChild(button);
-      li.appendChild(bookmarkButton);
       fragment.appendChild(li);
     });
     els.segmentList.appendChild(fragment);
@@ -793,6 +786,7 @@
       els.cueState.textContent = state.isPlaying ? "播放中" : "待机";
       updateCueProgress(null, null);
       renderCuePlaceholder("导入字幕开始练习。");
+      renderBookmarkButton();
       return;
     }
     els.cueIndex.textContent = `${segment.index + 1}/${state.segments.length}`;
@@ -801,6 +795,18 @@
     setCueHoverLabel(state.isRecording ? "录音中" : modeLabel());
     renderCuePhrases(segment);
     updateStudyProgress(currentPlaybackTime(), { force: true });
+    renderBookmarkButton();
+  }
+
+  function renderBookmarkButton() {
+    if (!els.bookmarkButton) return;
+    const segment = currentSegment();
+    const bookmarked = Boolean(segment && isBookmarked(segment.id));
+    els.bookmarkButton.disabled = !segment;
+    els.bookmarkButton.classList.toggle("active", bookmarked);
+    els.bookmarkButton.title = bookmarked ? "取消收藏当前段落" : "收藏当前段落";
+    els.bookmarkButton.setAttribute("aria-label", bookmarked ? "取消收藏当前段落" : "收藏当前段落");
+    els.bookmarkButton.setAttribute("aria-pressed", String(bookmarked));
   }
 
   function modeLabel() {
@@ -950,6 +956,7 @@
     stopLoop({ silent: true });
     renderSegments();
     renderCue();
+    renderBookmarkButton();
     renderScore();
   }
 
@@ -997,6 +1004,7 @@
     persistLastSession();
     renderSegments();
     renderCue();
+    renderBookmarkButton();
     renderScore();
   }
 
@@ -1444,6 +1452,7 @@
     }
     persistProgress();
     renderSegments();
+    renderBookmarkButton();
   }
 
   function bestScore(segmentId) {
